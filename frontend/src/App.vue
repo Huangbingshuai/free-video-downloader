@@ -610,7 +610,13 @@ function downloadTranscriptForUrl(url: string) {
 // markmap 状态：每个 summary 独立存储 mindmap markdown、SVG 元素引用和实例
 const mindmapMarkdowns: Record<string, string> = {};
 const markmapInstances: Record<string, { instance: any; svgEl: SVGElement | null }> = {};
-const mindmapFullscreen: Record<string, boolean> = {};
+const mindmapFullscreen: Record<string, boolean> = reactive({});
+
+type MindmapExportSvg = {
+  svgStr: string;
+  width: number;
+  height: number;
+};
 
 function renderMarkmap(summaryId: string, md: string) {
   const entry = markmapInstances[summaryId];
@@ -643,29 +649,45 @@ function toggleMindmapFullscreen(summaryId: string) {
   });
 }
 
-// ── 导出 SVG ──
-function downloadMindmapSvg(summaryId: string) {
-  const entry = markmapInstances[summaryId];
-  const svgEl = entry?.svgEl;
-  if (!svgEl) return;
-  const clone = svgEl.cloneNode(true) as SVGElement;
-  // 计算内容边界
-  const g = clone.querySelector("g");
-  let vx = 0, vy = 0, vw = 800, vh = 600;
+function findDirectSvgGroup(svgEl: SVGElement): SVGGElement | null {
+  return Array.from(svgEl.children).find((child): child is SVGGElement => child.tagName.toLowerCase() === "g") || null;
+}
+
+function getMindmapExportBounds(entry: { instance: any; svgEl: SVGElement | null }) {
+  const rect = entry.instance?.state?.rect;
+  if (rect) {
+    const x = Number(rect.x1);
+    const y = Number(rect.y1);
+    const width = Number(rect.x2) - Number(rect.x1);
+    const height = Number(rect.y2) - Number(rect.y1);
+    if ([x, y, width, height].every(Number.isFinite) && width > 0 && height > 0) {
+      return { x, y, width, height };
+    }
+  }
+
+  const g = entry.svgEl ? findDirectSvgGroup(entry.svgEl) : null;
   if (g) {
     try {
       const bbox = g.getBBox();
-      const pad = 40;
-      vx = bbox.x - pad; vy = bbox.y - pad;
-      vw = bbox.width + pad * 2; vh = bbox.height + pad * 2;
-    } catch {}
+      if (bbox.width > 0 && bbox.height > 0) {
+        return { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height };
+      }
+    } catch {
+      // fall through to default bounds
+    }
   }
-  clone.setAttribute("viewBox", `${vx} ${vy} ${vw} ${vh}`);
-  clone.setAttribute("width", String(vw));
-  clone.setAttribute("height", String(vh));
-  clone.querySelectorAll("foreignObject").forEach((fo) => {
+
+  return { x: 0, y: 0, width: 800, height: 600 };
+}
+
+function replaceForeignObjectsWithText(svgEl: SVGElement) {
+  svgEl.querySelectorAll("foreignObject").forEach((fo) => {
     const text = fo.textContent?.trim() || "";
-    if (!text) { fo.remove(); return; }
+    if (!text) {
+      fo.remove();
+      return;
+    }
+
     const x = parseFloat(fo.getAttribute("x") || "0");
     const y = parseFloat(fo.getAttribute("y") || "0");
     const h = parseFloat(fo.getAttribute("height") || "20");
@@ -678,80 +700,83 @@ function downloadMindmapSvg(summaryId: string) {
     textEl.textContent = text;
     fo.parentNode?.replaceChild(textEl, fo);
   });
+}
+
+// ── 导出 SVG / PNG 公用：基于内容边界生成静态、居中的 SVG ──
+function serializeSvgForExport(entry: { instance: any; svgEl: SVGElement | null }): MindmapExportSvg | null {
+  const svgEl = entry.svgEl;
+  if (!svgEl) return null;
+
+  const clone = svgEl.cloneNode(true) as SVGElement;
+  const contentGroup = findDirectSvgGroup(clone);
+  if (contentGroup) {
+    contentGroup.removeAttribute("transform");
+  }
+
+  replaceForeignObjectsWithText(clone);
+
+  const bounds = getMindmapExportBounds(entry);
+  const padding = 48;
+  const viewX = bounds.x - padding;
+  const viewY = bounds.y - padding;
+  const width = Math.ceil(bounds.width + padding * 2);
+  const height = Math.ceil(bounds.height + padding * 2);
+
+  clone.setAttribute("viewBox", `${viewX} ${viewY} ${width} ${height}`);
+  clone.setAttribute("width", String(width));
+  clone.setAttribute("height", String(height));
+
   const serializer = new XMLSerializer();
   let svgStr = serializer.serializeToString(clone);
+  // 确保命名空间
   if (!svgStr.includes("xmlns=")) {
     svgStr = svgStr.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
   }
-  triggerDownloadBlob(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }), "mindmap.svg");
+
+  return { svgStr, width, height };
+}
+
+// ── 导出 SVG ──
+function downloadMindmapSvg(summaryId: string) {
+  const entry = markmapInstances[summaryId];
+  if (!entry?.svgEl) return;
+  const exportSvg = serializeSvgForExport(entry);
+  if (!exportSvg) return;
+  triggerDownloadBlob(new Blob([exportSvg.svgStr], { type: "image/svg+xml;charset=utf-8" }), "mindmap.svg");
 }
 
 // ── 导出高清 PNG ──
 async function downloadMindmapPng(summaryId: string) {
   const entry = markmapInstances[summaryId];
-  const svgEl = entry?.svgEl;
-  if (!svgEl) return;
-  const clone = svgEl.cloneNode(true) as SVGElement;
-  // 替换 foreignObject 为 text
-  clone.querySelectorAll("foreignObject").forEach((fo) => {
-    const text = fo.textContent?.trim() || "";
-    if (!text) { fo.remove(); return; }
-    const x = parseFloat(fo.getAttribute("x") || "0");
-    const y = parseFloat(fo.getAttribute("y") || "0");
-    const h = parseFloat(fo.getAttribute("height") || "20");
-    const textEl = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    textEl.setAttribute("x", String(x + 4));
-    textEl.setAttribute("y", String(y + h / 2 + 5));
-    textEl.setAttribute("font-size", "14");
-    textEl.setAttribute("font-family", "sans-serif");
-    textEl.setAttribute("fill", "#e2e8f0");
-    textEl.textContent = text;
-    fo.parentNode?.replaceChild(textEl, fo);
-  });
-  // 内容边界
-  const g = clone.querySelector("g");
-  let vx = 0, vy = 0, vw = 800, vh = 600;
-  if (g) {
-    try {
-      const bbox = g.getBBox();
-      const pad = 40;
-      vx = bbox.x - pad; vy = bbox.y - pad;
-      vw = bbox.width + pad * 2; vh = bbox.height + pad * 2;
-    } catch {}
-  }
+  if (!entry?.svgEl) return;
+  const exportSvg = serializeSvgForExport(entry);
+  if (!exportSvg) return;
+  const { svgStr, width: vw, height: vh } = exportSvg;
+  // 高清缩放
   const scale = Math.max(3, Math.ceil(3840 / vw));
-  const width = vw * scale;
-  const height = vh * scale;
-  clone.setAttribute("viewBox", `${vx} ${vy} ${vw} ${vh}`);
-  clone.setAttribute("width", String(vw));
-  clone.setAttribute("height", String(vh));
-  const serializer = new XMLSerializer();
-  let svgStr = serializer.serializeToString(clone);
-  if (!svgStr.includes("xmlns=")) {
-    svgStr = svgStr.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
-  }
-  return new Promise<void>((resolve) => {
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) { resolve(); return; }
-    ctx.fillStyle = "#11141a";
-    ctx.fillRect(0, 0, width, height);
-    const img = new Image();
-    const blob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = vw * scale;
+  canvas.height = vh * scale;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.fillStyle = "#11141a";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // 在 img 标签内加载处理后的 SVG
+  const img = new Image();
+  const blob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  await new Promise<void>((resolve) => {
     img.onload = () => {
-      ctx.drawImage(img, 0, 0, width, height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       URL.revokeObjectURL(url);
-      canvas.toBlob((png) => {
-        if (png) triggerDownloadBlob(png, "mindmap.png");
-        resolve();
-      }, "image/png");
+      resolve();
     };
     img.onerror = () => { URL.revokeObjectURL(url); resolve(); };
     img.src = url;
   });
+  canvas.toBlob((png) => {
+    if (png) triggerDownloadBlob(png, "mindmap.png");
+  }, "image/png");
 }
 
 function triggerDownloadBlob(blob: Blob, filename: string) {
