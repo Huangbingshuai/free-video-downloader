@@ -14,6 +14,61 @@ from app.services.job_store import JobStore
 
 DEFAULT_FORMAT_SELECTOR = "bv*+ba/b"
 
+# B站等平台会校验 UA，缺浏览器 UA 会返回 412 或 bot 拦截
+# 注意：不要设全局 Referer，yt-dlp 各站点 extractor 内部会自动带正确的 Referer
+_YTDLP_HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
+
+
+def _base_ytdlp_opts() -> dict[str, Any]:
+    """返回 yt-dlp 通用选项，包含 YouTube 反 bot 检测所需配置。"""
+    youtube_args: dict[str, list[str]] = {
+        "player_client": ["android", "web", "web_safari"],
+    }
+
+    # PO Token: 优先使用本地 bgutil HTTP 服务器
+    pot_url = os.getenv("POT_PROVIDER_URL", "http://127.0.0.1:4416").strip()
+    if pot_url:
+        youtube_args["fetch_pot"] = ["always"]
+        # 通过 extractor args 传递 base_url 给 bgutil http 插件
+        youtube_args["getpot_bgutil_baseurl"] = [pot_url]
+
+    opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+        "socket_timeout": 30,
+        "retries": 1,
+        "fragment_retries": 1,
+        "http_headers": _YTDLP_HTTP_HEADERS,
+        "extractor_args": {"youtube": youtube_args},
+    }
+
+    # JS 运行时: 用于 NSig 挑战，Node.js 已安装即可用
+    js_runtime = os.getenv("YTDLP_JS_RUNTIME", "node").strip()
+    if js_runtime:
+        opts["js_runtimes"] = {js_runtime: {}}
+
+    # 远程组件: 用于 JS 挑战求解，从 GitHub 下载
+    remote_components = os.getenv("YTDLP_REMOTE_COMPONENTS", "ejs:github").strip()
+    if remote_components:
+        opts["remote_components"] = [remote_components]
+
+    # Cookies: 优先从浏览器提取（绕过 bot 检测），其次从文件
+    cookie_browser = os.getenv("YTDLP_COOKIE_BROWSER", "").strip()
+    if cookie_browser:
+        opts["cookiesfrombrowser"] = [cookie_browser]
+    else:
+        cookie_file = os.getenv("YTDLP_COOKIE_FILE", "").strip()
+        if cookie_file and Path(cookie_file).is_file():
+            opts["cookiefile"] = cookie_file
+
+    return opts
+
 
 class YtDlpUnavailable(RuntimeError):
     pass
@@ -114,15 +169,7 @@ class YtDlpService:
             raise RuntimeError("该爱奇艺视频无法解析，可能是VIP内容、已下架或区域限制")
 
         yt_dlp = _yt_dlp()
-        opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "noplaylist": True,
-            "socket_timeout": 15,
-            "retries": 1,
-            "fragment_retries": 1,
-        }
+        opts = _base_ytdlp_opts()
         with yt_dlp.YoutubeDL(opts) as ydl:
             raw = ydl.extract_info(url, download=False)
             info = ydl.sanitize_info(raw)
@@ -214,17 +261,14 @@ class YtDlpService:
             elif status == "finished":
                 store.update(job_id, progress=100.0, downloaded_bytes=downloaded, total_bytes=total)
 
+        base = _base_ytdlp_opts()
         opts = {
+            **base,
             "format": resolved_format_id,
             "outtmpl": str(output_dir / "%(title).180B-%(id)s.%(ext)s"),
-            "noplaylist": True,
             "restrictfilenames": True,
             "progress_hooks": [progress_hook],
-            "quiet": True,
-            "no_warnings": True,
-            "socket_timeout": 15,
-            "retries": 1,
-            "fragment_retries": 1,
+            "skip_download": False,
         }
         ffmpeg_location = _ffmpeg_location()
         if ffmpeg_location:

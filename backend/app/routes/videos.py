@@ -31,6 +31,8 @@ CHUNK_SIZE = 1024 * 1024
 EXTRACT_TIMEOUT_SECONDS = 25
 extract_executor = ThreadPoolExecutor(max_workers=4)
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+BOT_CHECK_RE = re.compile(r"sign in to confirm you.{0,10}re not a bot", re.IGNORECASE)
+LOGIN_REQUIRED_RE = re.compile(r"LOGIN_REQUIRED|login.required", re.IGNORECASE)
 LOGIN_ERROR_RE = re.compile(
     r"(cookie|cookies-from-browser|login|log in|sign in|authentication|authenticate|登录|验证码|verify)",
     re.IGNORECASE,
@@ -63,6 +65,13 @@ def _allowed_download_roots() -> list[Path]:
 
 def _friendly_error(error: Exception | str) -> str:
     message = ANSI_ESCAPE_RE.sub("", str(error)).strip()
+    if LOGIN_REQUIRED_RE.search(message):
+        return "该视频需要登录 YouTube 账号才能观看（可能是年龄限制或创作者设置），请尝试其他公开视频。"
+    if BOT_CHECK_RE.search(message):
+        return (
+            "YouTube 将服务器 IP 识别为机器人，暂时拒绝访问。"
+            "解决方法：设置环境变量 YTDLP_COOKIE_FILE=./cookies.txt 并导出浏览器 YouTube cookies；或尝试其他平台视频"
+        )
     if LOGIN_ERROR_RE.search(message):
         return "该内容需要登录态或验证。出于用户安全，本网站服务端不接收、不代管平台 Cookie；请改用公开视频链接。"
     return message

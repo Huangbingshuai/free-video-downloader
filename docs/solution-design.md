@@ -64,6 +64,29 @@ docs/
 
 返回服务端已下载文件。小文件使用 `FileResponse`，大于 500MB 的文件使用 `StreamingResponse` 分块传输。
 
+### POST /api/summaries
+
+创建视频 AI 学习分析任务。第一版仅支持平台字幕或自动字幕，不做无字幕音频转写。请求中由用户提供 DeepSeek API Key，服务端仅在本次后台任务中临时使用，不写入任务结果。
+
+```json
+{
+  "url": "https://example.com/video",
+  "deepseek_api_key": "sk-xxx",
+  "model": "deepseek-v4-flash",
+  "language": "zh"
+}
+```
+
+响应返回 `summary_id`，前端随后轮询任务状态。
+
+### GET /api/summaries/{summary_id}
+
+返回 AI 分析任务状态、进度、错误信息和结果。成功结果包含视频摘要、章节大纲、核心要点、行动建议、术语解释、带时间戳转录文本、思维导图树和 Markdown 笔记。
+
+### POST /api/summaries/{summary_id}/questions
+
+针对已完成的视频分析结果提问。请求中继续由用户提供 DeepSeek API Key，后端基于摘要和字幕上下文生成回答，并尽量返回引用字幕片段。
+
 ## 任务状态模型
 
 任务状态保存在内存中：
@@ -108,6 +131,7 @@ yt-dlp 使用 Python API 调用，避免解析命令行输出：
 - mock yt-dlp 服务，测试解析、任务创建、状态轮询。
 - 测试文件接口不能访问任务外文件。
 - 测试大文件分支返回流式响应。
+- mock 字幕提取和 DeepSeek 调用，测试 AI 分析任务生命周期、字幕解析和问答接口。
 
 前端：
 

@@ -84,3 +84,72 @@ class JobStatus(BaseModel):
     total_bytes: int | None = None
     error: str | None = None
     files: list[FileRecord] = Field(default_factory=list)
+
+
+class TranscriptSegment(BaseModel):
+    start: float
+    end: float | None = None
+    text: str
+
+
+class SummaryChapter(BaseModel):
+    start: float | None = None
+    title: str
+    summary: str
+
+
+class SummaryTerm(BaseModel):
+    name: str
+    explanation: str
+
+
+class MindMapNode(BaseModel):
+    name: str
+    children: list["MindMapNode"] = Field(default_factory=list)
+
+
+class SummaryResult(BaseModel):
+    title: str
+    overview: str
+    chapters: list[SummaryChapter] = Field(default_factory=list)
+    key_points: list[str] = Field(default_factory=list)
+    action_items: list[str] = Field(default_factory=list)
+    terms: list[SummaryTerm] = Field(default_factory=list)
+    transcript: list[TranscriptSegment] = Field(default_factory=list)
+    mindmap: MindMapNode | None = None
+    mermaid: str = ""
+    mindmap_markdown: str = ""
+    markdown: str = ""
+
+
+class CreateSummaryRequest(BaseModel):
+    url: HttpUrl
+    language: str = Field(default="zh", max_length=20)
+
+
+class CreateSummaryResponse(BaseModel):
+    summary_id: str
+    status: str
+
+
+class SummaryStatus(BaseModel):
+    summary_id: str
+    url: str
+    status: Literal["queued", "running", "success", "failed"]
+    progress: float = 0
+    error: str | None = None
+    result: SummaryResult | None = None
+
+
+class AskSummaryRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=1000)
+
+
+class AnswerReference(BaseModel):
+    start: float | None = None
+    text: str
+
+
+class AskSummaryResponse(BaseModel):
+    answer: str
+    references: list[AnswerReference] = Field(default_factory=list)

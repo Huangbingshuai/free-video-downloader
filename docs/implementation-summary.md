@@ -59,6 +59,26 @@ docs/
 - 直链下载: 基于 `Content-Length` 和已下载字节数计算
 - 前端轮询 `GET /api/jobs/{job_id}` 每 1.5 秒更新进度条
 
+### 4. AI 视频学习分析
+
+新增字幕驱动的 AI 学习分析模块，第一版仅支持可提取平台字幕或自动字幕的视频，不做无字幕音频转写。用户在前端填写自己的 DeepSeek API Key，服务端只在本次请求/后台任务中临时使用，不写入任务结果。
+
+能力包括：
+
+- 视频总结摘要：一句话概览、章节大纲、核心知识点、行动建议和术语解释。
+- 字幕 / 转录文本展示：统一解析 `vtt`、`srt`、`json3` 为带时间戳片段。
+- 思维导图可视化：后端生成树形结构，前端以层级图展示。
+- AI 问答：基于已生成的摘要和字幕上下文回答问题，并返回引用字幕片段。
+
+新增模块：
+
+```text
+backend/app/routes/summaries.py
+backend/app/services/summary_store.py
+backend/app/services/transcript_service.py
+backend/app/services/deepseek_service.py
+```
+
 ## 内置平台解析器
 
 ### 抖音 (DouyinBuiltinParser)
@@ -121,6 +141,9 @@ MAGIC = `0x75706971676c`，用于 XOR 混淆。tvid < 900000 时会执行 `100 *
 | GET | `/api/jobs/{job_id}` | 查询任务状态和进度 |
 | GET | `/api/direct?url=&format_id=` | 直链探测和 302 重定向 |
 | GET | `/api/files/{job_id}/{file_id}` | 下载已完成文件 |
+| POST | `/api/summaries` | 创建 AI 视频学习分析任务 |
+| GET | `/api/summaries/{summary_id}` | 查询 AI 分析任务和结果 |
+| POST | `/api/summaries/{summary_id}/questions` | 针对视频内容提问 |
 
 ## 前端设计
 
