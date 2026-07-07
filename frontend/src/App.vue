@@ -463,11 +463,16 @@ async function askSummary(summary: SummaryStatus) {
   lastQuestionText[summary.summary_id] = question;
   questionInputs[summary.summary_id] = "";
 
-  // 立即插入用户气泡
+  // 追加到对话列表末尾
   const pendingEntry: QuestionAnswer = { question, answer: "", references: [] };
-  questionAnswers[summary.summary_id] = [pendingEntry, ...(questionAnswers[summary.summary_id] || [])];
-  activeAnswerIndex[summary.summary_id] = 0;
+  const list = questionAnswers[summary.summary_id] || [];
+  questionAnswers[summary.summary_id] = [...list, pendingEntry];
+  activeAnswerIndex[summary.summary_id] = list.length;
   streamingQA[summary.summary_id] = "";
+
+  // 获取新条目的索引（即数组最后一个位置）
+  const pendingIdx = list.length;
+  void nextTick(() => scrollChatBot(summary.summary_id));
 
   try {
     const response = await fetch(`/api/summaries/${summary.summary_id}/questions/stream`, {
@@ -503,6 +508,7 @@ async function askSummary(summary: SummaryStatus) {
           if (event.type === "stream") {
             answerText += event.text;
             streamingQA[summary.summary_id] = answerText;
+            scrollChatBot(summary.summary_id);
           } else if (event.type === "done") {
             answerText = event.answer;
             references = event.references;
@@ -516,15 +522,20 @@ async function askSummary(summary: SummaryStatus) {
     }
 
     // 更新已插入的 pending entry
-    questionAnswers[summary.summary_id][0].answer = answerText || "未能生成回答。";
-    questionAnswers[summary.summary_id][0].references = references;
+    questionAnswers[summary.summary_id][pendingIdx].answer = answerText || "未能生成回答。";
+    questionAnswers[summary.summary_id][pendingIdx].references = references;
     streamingQA[summary.summary_id] = "";
   } catch (error) {
-    questionAnswers[summary.summary_id][0].answer = error instanceof Error ? error.message : "提问失败";
+    questionAnswers[summary.summary_id][pendingIdx].answer = error instanceof Error ? error.message : "提问失败";
     streamingQA[summary.summary_id] = "";
   } finally {
     questionLoading[summary.summary_id] = false;
   }
+}
+
+function scrollChatBot(summaryId: string) {
+  const el = document.getElementById(`chat-scroll-${summaryId}`);
+  if (el) el.scrollTop = el.scrollHeight;
 }
 
 function askSummaryForUrl(url: string) {
@@ -959,6 +970,7 @@ const summaryTabs = [
                 <div v-else class="flex flex-col" style="min-height: 440px;">
                   <!-- 对话气泡主区域（可滚动） -->
                   <div
+                    :id="`chat-scroll-${summaryIdForUrl(item.url)}`"
                     class="flex-1 overflow-y-auto px-3 custom-scroll"
                     :class="{ 'flex items-center justify-center': !(questionAnswers[summaryIdForUrl(item.url)] || []).length && !streamingQA[summaryIdForUrl(item.url)] }"
                     style="max-height: 420px;"
