@@ -638,16 +638,22 @@ function summaryForUrlBySummaryId(summaryId: string): SummaryStatus | undefined 
   return summaryJobs.value.find((j) => j.summary_id === summaryId);
 }
 
+function getMindmapText(url: string): string {
+  const sid = summaryIdForUrl(url);
+  return mindmapMarkdowns[sid]
+    || summaryForUrl(url)?.result?.mindmap_markdown
+    || flattenedMindmap(summaryForUrl(url)?.result?.mindmap).map((n) => `${"  ".repeat(n.depth)}- ${n.name}`).join("\n");
+}
+
 function copyMindmapForUrl(url: string) {
-  const r = summaryForUrl(url)?.result;
-  const text = r?.mindmap_markdown || flattenedMindmap(r?.mindmap).map((n) => `${"  ".repeat(n.depth)}- ${n.name}`).join("\n");
+  const text = getMindmapText(url);
   if (text) navigator.clipboard.writeText(text).then(() => showToast("已复制思维导图"));
 }
 
 function downloadMindmapForUrl(url: string) {
-  const r = summaryForUrl(url)?.result;
-  const text = r?.mindmap_markdown || flattenedMindmap(r?.mindmap).map((n) => `${"  ".repeat(n.depth)}- ${n.name}`).join("\n");
+  const text = getMindmapText(url);
   if (!text) return;
+  const r = summaryForUrl(url)?.result;
   const filename = (r?.title || "思维导图").replace(/[/\\?%*:|"<>]/g, "_") + "_导图.md";
   const blob = new Blob([text], { type: "text/markdown; charset=utf-8" });
   const a = document.createElement("a");

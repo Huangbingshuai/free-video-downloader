@@ -124,7 +124,11 @@ class DeepSeekService:
                 },
             ],
         )
-        return self._to_summary_result(title, transcript, final_payload)
+        result = self._to_summary_result(title, transcript, final_payload)
+        # 非流式路径也生成 mindmap_markdown
+        mindmap_md = self._generate_mindmap(title, transcript, result.markdown)
+        result.mindmap_markdown = mindmap_md
+        return result
 
     def answer(
         self,
