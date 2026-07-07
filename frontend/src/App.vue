@@ -610,6 +610,7 @@ function downloadTranscriptForUrl(url: string) {
 // markmap 状态：每个 summary 独立存储 mindmap markdown、SVG 元素引用和实例
 const mindmapMarkdowns: Record<string, string> = {};
 const markmapInstances: Record<string, { instance: any; svgEl: SVGElement | null }> = {};
+const mindmapFullscreen: Record<string, boolean> = {};
 
 function renderMarkmap(summaryId: string, md: string) {
   const entry = markmapInstances[summaryId];
@@ -634,28 +635,126 @@ function setMarkmapRef(summaryId: string, el: SVGElement | null) {
   });
 }
 
-function summaryForUrlBySummaryId(summaryId: string): SummaryStatus | undefined {
-  return summaryJobs.value.find((j) => j.summary_id === summaryId);
+// ── 全屏 ──
+function toggleMindmapFullscreen(summaryId: string) {
+  mindmapFullscreen[summaryId] = !mindmapFullscreen[summaryId];
+  nextTick(() => {
+    markmapInstances[summaryId]?.instance?.fit();
+  });
 }
 
-function getMindmapText(url: string): string {
-  const sid = summaryIdForUrl(url);
-  return mindmapMarkdowns[sid]
-    || summaryForUrl(url)?.result?.mindmap_markdown
-    || flattenedMindmap(summaryForUrl(url)?.result?.mindmap).map((n) => `${"  ".repeat(n.depth)}- ${n.name}`).join("\n");
+// ── 导出 SVG ──
+function downloadMindmapSvg(summaryId: string) {
+  const entry = markmapInstances[summaryId];
+  const svgEl = entry?.svgEl;
+  if (!svgEl) return;
+  const clone = svgEl.cloneNode(true) as SVGElement;
+  // 计算内容边界
+  const g = clone.querySelector("g");
+  let vx = 0, vy = 0, vw = 800, vh = 600;
+  if (g) {
+    try {
+      const bbox = g.getBBox();
+      const pad = 40;
+      vx = bbox.x - pad; vy = bbox.y - pad;
+      vw = bbox.width + pad * 2; vh = bbox.height + pad * 2;
+    } catch {}
+  }
+  clone.setAttribute("viewBox", `${vx} ${vy} ${vw} ${vh}`);
+  clone.setAttribute("width", String(vw));
+  clone.setAttribute("height", String(vh));
+  clone.querySelectorAll("foreignObject").forEach((fo) => {
+    const text = fo.textContent?.trim() || "";
+    if (!text) { fo.remove(); return; }
+    const x = parseFloat(fo.getAttribute("x") || "0");
+    const y = parseFloat(fo.getAttribute("y") || "0");
+    const h = parseFloat(fo.getAttribute("height") || "20");
+    const textEl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    textEl.setAttribute("x", String(x + 4));
+    textEl.setAttribute("y", String(y + h / 2 + 5));
+    textEl.setAttribute("font-size", "14");
+    textEl.setAttribute("font-family", "sans-serif");
+    textEl.setAttribute("fill", "#e2e8f0");
+    textEl.textContent = text;
+    fo.parentNode?.replaceChild(textEl, fo);
+  });
+  const serializer = new XMLSerializer();
+  let svgStr = serializer.serializeToString(clone);
+  if (!svgStr.includes("xmlns=")) {
+    svgStr = svgStr.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+  }
+  triggerDownloadBlob(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }), "mindmap.svg");
 }
 
-function copyMindmapForUrl(url: string) {
-  const text = getMindmapText(url);
-  if (text) navigator.clipboard.writeText(text).then(() => showToast("已复制思维导图"));
+// ── 导出高清 PNG ──
+async function downloadMindmapPng(summaryId: string) {
+  const entry = markmapInstances[summaryId];
+  const svgEl = entry?.svgEl;
+  if (!svgEl) return;
+  const clone = svgEl.cloneNode(true) as SVGElement;
+  // 替换 foreignObject 为 text
+  clone.querySelectorAll("foreignObject").forEach((fo) => {
+    const text = fo.textContent?.trim() || "";
+    if (!text) { fo.remove(); return; }
+    const x = parseFloat(fo.getAttribute("x") || "0");
+    const y = parseFloat(fo.getAttribute("y") || "0");
+    const h = parseFloat(fo.getAttribute("height") || "20");
+    const textEl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    textEl.setAttribute("x", String(x + 4));
+    textEl.setAttribute("y", String(y + h / 2 + 5));
+    textEl.setAttribute("font-size", "14");
+    textEl.setAttribute("font-family", "sans-serif");
+    textEl.setAttribute("fill", "#e2e8f0");
+    textEl.textContent = text;
+    fo.parentNode?.replaceChild(textEl, fo);
+  });
+  // 内容边界
+  const g = clone.querySelector("g");
+  let vx = 0, vy = 0, vw = 800, vh = 600;
+  if (g) {
+    try {
+      const bbox = g.getBBox();
+      const pad = 40;
+      vx = bbox.x - pad; vy = bbox.y - pad;
+      vw = bbox.width + pad * 2; vh = bbox.height + pad * 2;
+    } catch {}
+  }
+  const scale = Math.max(3, Math.ceil(3840 / vw));
+  const width = vw * scale;
+  const height = vh * scale;
+  clone.setAttribute("viewBox", `${vx} ${vy} ${vw} ${vh}`);
+  clone.setAttribute("width", String(vw));
+  clone.setAttribute("height", String(vh));
+  const serializer = new XMLSerializer();
+  let svgStr = serializer.serializeToString(clone);
+  if (!svgStr.includes("xmlns=")) {
+    svgStr = svgStr.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+  }
+  return new Promise<void>((resolve) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) { resolve(); return; }
+    ctx.fillStyle = "#11141a";
+    ctx.fillRect(0, 0, width, height);
+    const img = new Image();
+    const blob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      ctx.drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(url);
+      canvas.toBlob((png) => {
+        if (png) triggerDownloadBlob(png, "mindmap.png");
+        resolve();
+      }, "image/png");
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+    img.src = url;
+  });
 }
 
-function downloadMindmapForUrl(url: string) {
-  const text = getMindmapText(url);
-  if (!text) return;
-  const r = summaryForUrl(url)?.result;
-  const filename = (r?.title || "思维导图").replace(/[/\\?%*:|"<>]/g, "_") + "_导图.md";
-  const blob = new Blob([text], { type: "text/markdown; charset=utf-8" });
+function triggerDownloadBlob(blob: Blob, filename: string) {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = filename;
@@ -663,6 +762,10 @@ function downloadMindmapForUrl(url: string) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(a.href);
+}
+
+function summaryForUrlBySummaryId(summaryId: string): SummaryStatus | undefined {
+  return summaryJobs.value.find((j) => j.summary_id === summaryId);
 }
 
 onBeforeUnmount(() => {
@@ -947,11 +1050,19 @@ const summaryTabs = [
 
                 <!-- 思维导图 -->
                 <div v-else-if="activeTabForUrl(item.url) === 'mindmap'">
-                  <div v-if="mindmapMarkdowns[summaryIdForUrl(item.url)] || summaryForUrl(item.url)?.result?.mindmap_markdown" class="rounded-2xl bg-[#11141a] p-3 overflow-hidden">
+                  <div v-if="mindmapMarkdowns[summaryIdForUrl(item.url)] || summaryForUrl(item.url)?.result?.mindmap_markdown" class="rounded-2xl bg-[#11141a] overflow-hidden" :class="mindmapFullscreen[summaryIdForUrl(item.url)] ? 'fixed inset-0 z-50 rounded-none' : ''">
+                    <!-- 工具栏 -->
+                    <div class="flex items-center justify-end gap-2 px-3 py-2 border-b border-[#2a303a]">
+                      <button type="button" class="rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-300 hover:text-white hover:bg-white/10 transition" @click="toggleMindmapFullscreen(summaryIdForUrl(item.url))">
+                        {{ mindmapFullscreen[summaryIdForUrl(item.url)] ? '退出全屏' : '全屏' }}
+                      </button>
+                      <button type="button" class="rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-300 hover:text-white hover:bg-white/10 transition" @click="downloadMindmapPng(summaryIdForUrl(item.url))">下载 PNG</button>
+                      <button type="button" class="rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-300 hover:text-white hover:bg-white/10 transition" @click="downloadMindmapSvg(summaryIdForUrl(item.url))">下载 SVG</button>
+                    </div>
                     <svg
                       :ref="(el: any) => setMarkmapRef(summaryIdForUrl(item.url), el)"
                       class="w-full"
-                      style="min-height: 460px;"
+                      :style="mindmapFullscreen[summaryIdForUrl(item.url)] ? 'height: calc(100vh - 41px);' : 'min-height: 460px;'"
                     ></svg>
                   </div>
                   <div v-else-if="summaryForUrl(item.url)?.result?.mindmap" class="rounded-2xl bg-[#11141a] p-3">
@@ -966,10 +1077,6 @@ const summaryTabs = [
                     </div>
                   </div>
                   <p v-else class="py-8 text-center text-sm text-slate-500">暂无思维导图数据</p>
-                  <div v-if="mindmapMarkdowns[summaryIdForUrl(item.url)] || summaryForUrl(item.url)?.result?.mindmap_markdown || summaryForUrl(item.url)?.result?.mindmap" class="mt-4 flex gap-2 border-t border-[#2a303a] pt-4">
-                    <button type="button" class="rounded-full border border-[#2a303a] px-3 py-2 text-xs font-black text-slate-200 hover:border-blue-400 hover:text-blue-200" @click="copyMindmapForUrl(item.url)">复制</button>
-                    <button type="button" class="rounded-full bg-blue-500 px-3 py-2 text-xs font-black text-white hover:bg-blue-400" @click="downloadMindmapForUrl(item.url)">导出 Markdown</button>
-                  </div>
                 </div>
 
                 <!-- AI 问答 -->
