@@ -11,7 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.schemas import CheckoutSessionResponse
-from app.services.auth_service import UserRecord, activate_vip
+from app.services.auth_service import UserRecord, activate_vip, deactivate_vip
 from app.services.database import get_connection
 
 
@@ -150,6 +150,62 @@ class BillingService:
             self._mark_payment_status(session_id, session_status)
         return CheckoutSessionResponse(status=payment_status or session_status, session_id=session_id, is_vip=False)
 
+    def request_refund(self, user: UserRecord, payment_id: str) -> dict[str, Any]:
+        payment = self._get_user_payment(user.id, payment_id)
+        if payment is None:
+            raise BillingError("支付流水不存在")
+        if payment["status"] in {"refunded", "refund_pending"}:
+            return dict(payment)
+        if payment["status"] != "paid":
+            raise BillingError("只有支付成功的流水才能退款")
+
+        payment_intent = payment["stripe_payment_intent_id"]
+        if not payment_intent:
+            raise BillingError("该流水缺少 Stripe PaymentIntent，无法退款")
+
+        refund_id: str | None = None
+        refund_status = "succeeded"
+        refund_error: str | None = None
+        if str(payment_intent).startswith("pi_mock_") or _env_bool("STRIPE_MOCK_MODE", False):
+            refund_id = f"re_mock_{payment_id[:24]}"
+        else:
+            try:
+                refund = self._create_stripe_refund(str(payment_intent), payment_id)
+                refund_id = str(_stripe_value(refund, "id", ""))
+                refund_status = str(_stripe_value(refund, "status", "pending"))
+            except Exception as exc:
+                refund_error = str(exc)
+                self._mark_refund_failed(payment_id, refund_error)
+                raise BillingError(f"Stripe 退款失败：{refund_error}") from exc
+
+        local_status = "refunded" if refund_status == "succeeded" else "refund_pending"
+        self._mark_refund_requested(
+            payment_id=payment_id,
+            stripe_refund_id=refund_id,
+            refund_status=refund_status,
+            local_status=local_status,
+        )
+        deactivate_vip(user.id)
+        updated = self._get_user_payment(user.id, payment_id)
+        return dict(updated) if updated is not None else dict(payment)
+
+    def _create_stripe_refund(self, payment_intent: str, payment_id: str) -> Any:
+        api_key = os.getenv("STRIPE_API_KEY", "").strip()
+        if not api_key:
+            raise StripeConfigurationError("服务端未配置 STRIPE_API_KEY")
+        try:
+            import stripe  # type: ignore
+        except ModuleNotFoundError as exc:
+            raise StripeConfigurationError("stripe 依赖未安装，请先安装 backend/requirements.txt") from exc
+
+        stripe.api_key = api_key
+        return stripe.Refund.create(
+            payment_intent=payment_intent,
+            reason="requested_by_customer",
+            metadata={"payment_id": payment_id, "purchase_type": "vip_lifetime"},
+            idempotency_key=f"refund:{payment_id}",
+        )
+
     def _retrieve_stripe_checkout_session(self, session_id: str) -> Any:
         api_key = os.getenv("STRIPE_API_KEY", "").strip()
         if not api_key:
@@ -243,6 +299,9 @@ class BillingService:
             session_id = str(session.get("id") or "")
             if session_id:
                 self._mark_payment_status(session_id, "expired")
+        elif event_type in {"refund.updated", "charge.refunded"}:
+            obj = event.get("data", {}).get("object", {})
+            self._handle_refund_event(obj, event_type)
         return {"ok": True, "duplicate": False}
 
     def _construct_event(self, payload: bytes, signature_header: str | None) -> dict[str, Any]:
@@ -300,7 +359,8 @@ class BillingService:
             rows = conn.execute(
                 """
                 SELECT id, status, amount_total, currency, stripe_checkout_session_id,
-                       stripe_payment_intent_id, created_at, updated_at
+                       stripe_payment_intent_id, stripe_refund_id, refund_status,
+                       refund_error, refund_requested_at, refunded_at, created_at, updated_at
                 FROM payments
                 WHERE user_id = ?
                 ORDER BY created_at DESC
@@ -309,6 +369,19 @@ class BillingService:
                 (user_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def _get_user_payment(self, user_id: str, payment_id: str):
+        with get_connection() as conn:
+            return conn.execute(
+                """
+                SELECT id, user_id, status, amount_total, currency, stripe_checkout_session_id,
+                       stripe_payment_intent_id, stripe_refund_id, refund_status,
+                       refund_error, refund_requested_at, refunded_at, created_at, updated_at
+                FROM payments
+                WHERE id = ? AND user_id = ?
+                """,
+                (payment_id, user_id),
+            ).fetchone()
 
     def _find_active_pending_payment(self, user_id: str, price_config: str):
         with get_connection() as conn:
@@ -406,6 +479,72 @@ class BillingService:
                 "UPDATE payments SET status = ?, updated_at = ? WHERE stripe_checkout_session_id = ?",
                 (status, _now_iso(), session_id),
             )
+
+    def _mark_refund_requested(
+        self,
+        payment_id: str,
+        stripe_refund_id: str | None,
+        refund_status: str,
+        local_status: str,
+    ) -> None:
+        now = _now_iso()
+        with get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE payments
+                SET status = ?,
+                    stripe_refund_id = COALESCE(?, stripe_refund_id),
+                    refund_status = ?,
+                    refund_error = NULL,
+                    refund_requested_at = COALESCE(refund_requested_at, ?),
+                    refunded_at = CASE WHEN ? = 'refunded' THEN COALESCE(refunded_at, ?) ELSE refunded_at END,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (local_status, stripe_refund_id, refund_status, now, local_status, now, now, payment_id),
+            )
+
+    def _mark_refund_failed(self, payment_id: str, error: str) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE payments
+                SET refund_status = 'failed',
+                    refund_error = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (error[:500], _now_iso(), payment_id),
+            )
+
+    def _handle_refund_event(self, obj: dict[str, Any], event_type: str) -> None:
+        payment_intent = str(obj.get("payment_intent") or "")
+        refund_id = str(obj.get("id") or "") if event_type == "refund.updated" else None
+        refund_status = str(obj.get("status") or "succeeded")
+        if not payment_intent:
+            return
+        local_status = "refunded" if event_type == "charge.refunded" or refund_status == "succeeded" else "refund_pending"
+        now = _now_iso()
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT user_id FROM payments WHERE stripe_payment_intent_id = ?",
+                (payment_intent,),
+            ).fetchone()
+            conn.execute(
+                """
+                UPDATE payments
+                SET status = ?,
+                    stripe_refund_id = COALESCE(?, stripe_refund_id),
+                    refund_status = ?,
+                    refund_requested_at = COALESCE(refund_requested_at, ?),
+                    refunded_at = CASE WHEN ? = 'refunded' THEN COALESCE(refunded_at, ?) ELSE refunded_at END,
+                    updated_at = ?
+                WHERE stripe_payment_intent_id = ?
+                """,
+                (local_status, refund_id, refund_status, now, local_status, now, now, payment_intent),
+            )
+        if row is not None:
+            deactivate_vip(str(row["user_id"]))
 
     def _record_event_once(self, event_id: str, event_type: str) -> bool:
         try:

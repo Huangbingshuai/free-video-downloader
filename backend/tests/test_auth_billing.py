@@ -5,6 +5,7 @@ import hmac
 import json
 import time
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.routes import billing
 from app.services.auth_service import activate_vip
+from app.services.database import get_connection
 
 
 @pytest.fixture(autouse=True)
@@ -23,7 +25,18 @@ def isolated_db(monkeypatch, tmp_path):
 
 
 def _register(client: TestClient, email: str = "user@example.com"):
-    return client.post("/api/auth/register", json={"email": email, "password": "password123"})
+    code = "123456"
+    now = f"2026-07-09T00:00:00.{time.time_ns()}+00:00"
+    expires_at = "2099-01-01T00:00:00+00:00"
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO email_codes (id, email, code, purpose, expires_at, created_at)
+            VALUES (?, ?, ?, 'register', ?, ?)
+            """,
+            (f"test-{uuid4().hex}", email, code, expires_at, now),
+        )
+    return client.post("/api/auth/register", json={"email": email, "password": "password123", "code": code})
 
 
 def _stripe_signature(payload: bytes, secret: str) -> str:
@@ -253,6 +266,60 @@ def test_payment_history_records_paid_checkout(monkeypatch):
     assert history.json()["payments"][0]["status"] == "paid"
     assert history.json()["payments"][0]["amount_total"] == 990
     assert history.json()["payments"][0]["currency"] == "cny"
+
+
+def test_refund_paid_checkout_deactivates_vip(monkeypatch):
+    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_mock")
+    monkeypatch.setenv("STRIPE_VIP_PRICE_ID", "price_mock")
+    monkeypatch.setenv("STRIPE_MOCK_MODE", "false")
+
+    def fake_create(payment_id, user):
+        return {
+            "id": "cs_test_refund_paid",
+            "url": "https://checkout.stripe.test/refund",
+            "expires_at": int(time.time()) + 3600,
+            "amount_total": 990,
+            "currency": "cny",
+        }
+
+    def fake_retrieve(session_id):
+        return {
+            "id": session_id,
+            "mode": "payment",
+            "payment_status": "paid",
+            "payment_intent": "pi_refund_paid",
+            "customer": "cus_refund_paid",
+            "client_reference_id": None,
+            "amount_total": 990,
+            "currency": "cny",
+            "metadata": {"user_id": user_id, "purchase_type": "vip_lifetime"},
+        }
+
+    def fake_refund(payment_intent, payment_id):
+        assert payment_intent == "pi_refund_paid"
+        return {"id": "re_test_refund_paid", "status": "succeeded"}
+
+    monkeypatch.setattr(billing.billing_service, "_create_stripe_checkout_session", fake_create)
+    monkeypatch.setattr(billing.billing_service, "_create_stripe_refund", fake_refund)
+
+    with TestClient(app) as client:
+        auth = _register(client, "refund@example.com")
+        user_id = auth.json()["user"]["id"]
+        checkout = client.post("/api/billing/create-checkout-session")
+        monkeypatch.setattr(billing.billing_service, "_retrieve_stripe_checkout_session", fake_retrieve)
+        client.post(
+            "/api/billing/confirm-checkout-session",
+            json={"session_id": checkout.json()["session_id"]},
+        )
+        paid_history = client.get("/api/billing/payments").json()["payments"]
+        refund = client.post(f"/api/billing/payments/{paid_history[0]['id']}/refund")
+        status = client.get("/api/membership/status")
+
+    assert refund.status_code == 200
+    assert refund.json()["payment"]["status"] == "refunded"
+    assert refund.json()["payment"]["stripe_refund_id"] == "re_test_refund_paid"
+    assert refund.json()["user"]["is_vip"] is False
+    assert status.json()["is_vip"] is False
 
 
 def test_confirm_checkout_session_rejects_wrong_user(monkeypatch):

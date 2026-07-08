@@ -179,6 +179,7 @@ class AuthUser(BaseModel):
     avatar_url: str | None = None
     is_vip: bool = False
     vip_activated_at: str | None = None
+    daily_ai_remaining: int = 0
 
 
 class AuthResponse(BaseModel):
@@ -214,9 +215,19 @@ class PaymentRecord(BaseModel):
     currency: str | None = None
     stripe_checkout_session_id: str | None = None
     stripe_payment_intent_id: str | None = None
+    stripe_refund_id: str | None = None
+    refund_status: str | None = None
+    refund_error: str | None = None
+    refund_requested_at: str | None = None
+    refunded_at: str | None = None
     created_at: str
     updated_at: str
 
 
 class PaymentHistoryResponse(BaseModel):
     payments: list[PaymentRecord] = Field(default_factory=list)
+
+
+class RefundPaymentResponse(BaseModel):
+    payment: PaymentRecord
+    user: AuthUser

@@ -115,6 +115,7 @@ type AuthUser = {
   avatar_url?: string | null;
   is_vip: boolean;
   vip_activated_at?: string | null;
+  daily_ai_remaining: number;
 };
 
 type PaymentRecord = {
@@ -124,6 +125,11 @@ type PaymentRecord = {
   currency?: string | null;
   stripe_checkout_session_id?: string | null;
   stripe_payment_intent_id?: string | null;
+  stripe_refund_id?: string | null;
+  refund_status?: string | null;
+  refund_error?: string | null;
+  refund_requested_at?: string | null;
+  refunded_at?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -195,6 +201,7 @@ const profileSaving = ref(false);
 const profileError = ref("");
 const paymentHistory = ref<PaymentRecord[]>([]);
 const paymentsLoading = ref(false);
+const refundingPayments = reactive<Record<string, boolean>>({});
 let toastTimer: number | undefined;
 
 function showToast(msg: string, tone: ToastTone = "info") {
@@ -356,12 +363,16 @@ function paymentStatusLabel(status: string) {
     pending: "待支付",
     failed: "支付失败",
     expired: "已过期",
+    refund_pending: "退款处理中",
+    refunded: "已退款",
   };
   return map[status] || status;
 }
 
 function paymentStatusClass(status: string) {
   if (status === "paid") return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  if (status === "refunded") return "bg-slate-100 text-slate-600 border-slate-200";
+  if (status === "refund_pending") return "bg-cyan-50 text-cyan-700 border-cyan-200";
   if (status === "failed" || status === "expired") return "bg-rose-50 text-rose-700 border-rose-200";
   return "bg-amber-50 text-amber-700 border-amber-200";
 }
@@ -387,6 +398,33 @@ function formatPaymentTime(value: string) {
 function shortPaymentId(payment: PaymentRecord) {
   const id = payment.stripe_checkout_session_id || payment.stripe_payment_intent_id || payment.id;
   return id.length > 18 ? `${id.slice(0, 10)}...${id.slice(-6)}` : id;
+}
+
+function canRefundPayment(payment: PaymentRecord) {
+  return payment.status === "paid" && Boolean(payment.stripe_payment_intent_id);
+}
+
+async function requestRefund(payment: PaymentRecord) {
+  if (!canRefundPayment(payment) || refundingPayments[payment.id]) return;
+  const confirmed = window.confirm("确定申请这笔 VIP 订单退款吗？退款提交后会立即关闭 VIP AI 功能。");
+  if (!confirmed) return;
+  refundingPayments[payment.id] = true;
+  try {
+    const response = await fetch(`/api/billing/payments/${payment.id}/refund`, {
+      method: "POST",
+      credentials: "include",
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || "退款申请失败");
+    const updated = payload.payment as PaymentRecord;
+    paymentHistory.value = paymentHistory.value.map((item) => item.id === updated.id ? updated : item);
+    authUser.value = payload.user || authUser.value;
+    showToast(updated.status === "refunded" ? "退款成功，VIP 已关闭" : "退款已提交，VIP 已关闭", "success");
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : "退款申请失败", "error");
+  } finally {
+    refundingPayments[payment.id] = false;
+  }
 }
 
 function openAuthModal(mode: "login" | "register" = "login") {
@@ -485,11 +523,11 @@ function scrollToPricing() {
 function promptVipForAi() {
   if (!authUser.value) {
     openAuthModal("login");
-    showToast("请先登录后开通 VIP");
+    showToast("请先登录");
     return;
   }
   scrollToPricing();
-  showToast("AI 总结为 VIP 专享功能");
+  showToast("今日免费 AI 次数已用完，请开通 VIP");
 }
 
 async function startVipCheckout() {
@@ -862,16 +900,24 @@ function setSummaryTab(url: string, tab: "summary" | "transcript" | "mindmap" | 
   if (summary) activeSummaryTabs[summary.summary_id] = tab;
 }
 
+function aiGateState(url: string): "content" | "login" | "trial" | "upgrade" | "loading" {
+  if (summaryForUrl(url)) return "content";
+  if (!authUser.value) return "login";
+  if (!isVip.value && (authUser.value?.daily_ai_remaining ?? 0) > 0) return "trial";
+  if (!isVip.value) return "upgrade";
+  return "loading";
+}
+
 async function autoCreateSummaries(items: AnalyzeItem[]) {
-  if (!isVip.value) return;
+  if (!authUser.value) return;
   const successfulItems = items.filter((item) => item.ok && item.video);
   await Promise.allSettled(successfulItems.map((item) => createSummary(item)));
 }
 
 async function createSummary(item: AnalyzeItem, force = false) {
   if (!item.video) return;
-  if (!isVip.value) {
-    promptVipForAi();
+  if (!authUser.value) {
+    openAuthModal("login");
     return;
   }
   const existing = summaryForUrl(item.url);
@@ -892,8 +938,10 @@ async function createSummary(item: AnalyzeItem, force = false) {
   const payload = await response.json();
   if (!response.ok) {
     summaryErrors[item.url] = payload.detail || "AI 分析任务创建失败";
+    if (response.status === 403) await loadAuth();
     return;
   }
+  if (!authUser.value.is_vip) await loadAuth();
   const initial: SummaryStatus = {
     summary_id: payload.summary_id,
     url: item.url,
@@ -1540,7 +1588,7 @@ const summaryTabs = [
                 <div class="mt-3 flex items-center justify-between rounded-xl border px-3 py-2 text-xs font-black" :class="authUser.is_vip ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'">
                   <span class="inline-flex items-center gap-1.5">
                     <Sparkles class="h-3.5 w-3.5" />
-                    {{ authUser.is_vip ? "VIP 已开通" : "免费用户" }}
+                    {{ authUser.is_vip ? "VIP 已开通" : `免费用户 · 今日剩余 ${authUser.daily_ai_remaining} 次` }}
                   </span>
                   <button v-if="!authUser.is_vip" type="button" class="text-[#ff5a5f] hover:underline" @click="userMenuOpen = false; scrollToPricing()">升级</button>
                 </div>
@@ -1685,76 +1733,6 @@ const summaryTabs = [
         </div>
       </section>
 
-      <section id="pricing" class="border-b border-[#f2ded3] bg-white">
-        <div class="mx-auto max-w-5xl px-4 py-14 sm:px-6 lg:px-8">
-          <div class="text-center">
-            <h2 class="text-3xl font-black text-slate-950 sm:text-4xl">选择适合你的视频下载方案</h2>
-            <p class="mt-4 text-sm leading-7 text-slate-500">免费版满足日常公开视频下载，VIP 解锁 AI 总结、思维导图和视频问答</p>
-          </div>
-
-          <div class="mt-10 grid gap-6 md:grid-cols-2">
-            <article class="flex min-h-[420px] flex-col rounded-2xl border border-[#f2ded3] bg-white p-7 shadow-sm shadow-[#f1c7b8]/20">
-              <div>
-                <h3 class="text-xl font-black text-slate-950">免费版</h3>
-                <p class="mt-2 text-sm font-medium text-slate-500">满足基础下载需求</p>
-                <p class="mt-8 flex items-end gap-2 text-4xl font-black text-slate-950">
-                  ¥0 <span class="pb-1 text-sm font-bold text-slate-400">/永久</span>
-                </p>
-              </div>
-              <ul class="mt-8 space-y-4 text-sm font-semibold leading-6 text-slate-500">
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />公开视频解析</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />直链下载与云端处理下载</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />多清晰度格式选择</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />基础视频信息解析</li>
-              </ul>
-              <button type="button" class="mt-auto rounded-full border border-[#f2ded3] bg-[#fff8f3] px-5 py-3 text-sm font-black text-slate-700" disabled>
-                当前方案
-              </button>
-            </article>
-
-            <article class="relative flex min-h-[420px] flex-col overflow-hidden rounded-2xl border border-[#ffc9bd] bg-[#fff8f3] p-7 text-slate-900 shadow-xl shadow-[#f1c7b8]/35">
-              <div class="absolute -right-20 -top-20 h-52 w-52 rounded-full bg-[#ff5a5f]/10"></div>
-              <div class="relative">
-                <div class="flex items-start justify-between gap-4">
-                  <div>
-                    <h3 class="text-xl font-black text-slate-950">VIP 高级版</h3>
-                    <p class="mt-2 text-sm font-medium leading-6 text-slate-500">
-                      AI 学习整理能力，永久解锁
-                    </p>
-                  </div>
-                  <span class="rounded-full px-3 py-1 text-xs font-black" :class="authUser?.is_vip ? 'bg-emerald-50 text-emerald-700' : 'bg-[#ff5a5f] text-white'">
-                    {{ authUser?.is_vip ? "已开通" : "推荐" }}
-                  </span>
-                </div>
-                <p class="mt-8 flex flex-wrap items-end gap-2 text-4xl font-black text-slate-950">
-                  ¥9.9 <span class="pb-1 text-sm font-bold text-[#ff5a5f]">永久</span>
-                </p>
-                <p v-if="authUser?.is_vip" class="mt-3 inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-700">
-                  <CheckCircle2 class="h-3.5 w-3.5" />
-                  AI 功能已解锁
-                </p>
-              </div>
-              <ul class="relative mt-8 space-y-4 text-sm font-semibold leading-6 text-slate-600">
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />AI 视频内容总结</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />章节大纲与核心要点</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />字幕整理与 TXT / SRT 导出</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />思维导图生成与导出</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />基于视频内容的 AI 问答</li>
-              </ul>
-              <button
-                type="button"
-                class="relative mt-auto rounded-full px-5 py-3 text-sm font-black shadow-lg transition disabled:cursor-not-allowed"
-                :class="authUser?.is_vip ? 'border border-emerald-200 bg-emerald-50 text-emerald-700 shadow-emerald-500/10' : 'bg-[#ff5a5f] text-white shadow-[#ff5a5f]/25 hover:bg-[#ef4444]'"
-                :disabled="billingLoading || Boolean(authUser?.is_vip)"
-                @click="startVipCheckout"
-              >
-                {{ authUser?.is_vip ? "已开通 VIP" : billingLoading ? "正在创建支付..." : "立即开通 VIP" }}
-              </button>
-            </article>
-          </div>
-        </div>
-      </section>
-
       <section v-if="results.length" id="results" class="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <div class="mb-4 flex items-center gap-2 text-sm font-bold text-[#ff5a5f]">
           <CheckCircle2 class="h-4 w-4" />
@@ -1801,20 +1779,81 @@ const summaryTabs = [
                 <h3 class="mt-3 line-clamp-3 text-xl font-black leading-8 text-slate-800">{{ item.video?.title }}</h3>
                 <p class="mt-2 break-all text-xs leading-5 text-slate-400">{{ item.url }}</p>
 
-                <div v-if="!isVip" class="mt-5 rounded-2xl border border-[#ffc9bd] bg-[#fff8f3] p-4">
+                <div v-if="!authUser" class="mt-5 rounded-2xl border border-[#ffc9bd] bg-[#fff8f3] p-4">
                   <p class="inline-flex items-center gap-1.5 text-xs font-black text-[#ff5a5f]">
                     <Sparkles class="h-3.5 w-3.5" />
-                    VIP 专享
+                    AI 总结
                   </p>
-                  <h4 class="mt-2 text-base font-black text-slate-900">开通后生成 AI 总结</h4>
+                  <h4 class="mt-2 text-base font-black text-slate-900">登录后免费试用</h4>
+                  <p class="mt-2 text-xs leading-5 text-slate-600">每日 2 次免费 AI 总结，登录即可使用。下载功能不受影响。</p>
+                  <button
+                    type="button"
+                    class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#ff5a5f] px-4 py-2.5 text-sm font-black text-white shadow-sm shadow-[#ff5a5f]/25 hover:bg-[#ef4444]"
+                    @click="openAuthModal('login')"
+                  >
+                    登录
+                  </button>
+                </div>
+
+                <div v-else-if="summaryForUrl(item.url)" class="mt-5 rounded-2xl border border-[#f2ded3] bg-[#fff8f3] p-4">
+                  <div class="flex items-center justify-between gap-3">
+                    <div>
+                      <p class="inline-flex items-center gap-1.5 text-xs font-bold text-rose-600">
+                        <Bot class="h-3.5 w-3.5" />
+                        自动总结
+                      </p>
+                      <p class="mt-1 text-sm font-black text-slate-700">
+                        <span v-if="isSummaryLoading(item.url)">分析中</span>
+                        <span v-else-if="summaryForUrl(item.url)?.status === 'success'">已完成</span>
+                        <span v-else-if="summaryForUrl(item.url)?.status === 'failed'">生成失败</span>
+                        <span v-else>等待启动</span>
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      class="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-[#f2ded3] bg-white px-3 py-2 text-xs font-black text-slate-600 transition hover:border-rose-300 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      :disabled="isSummaryLoading(item.url)"
+                      @click="createSummary(item, true)"
+                    >
+                      <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': isSummaryLoading(item.url) }" />
+                      {{ isSummaryLoading(item.url) ? "生成中" : summaryForUrl(item.url)?.status === "success" ? "重新生成" : "重新生成" }}
+                    </button>
+                  </div>
+                  <p v-if="!isVip && authUser.daily_ai_remaining > 0" class="mt-2 text-xs font-semibold text-emerald-600">今日剩余 {{ authUser.daily_ai_remaining }} 次免费</p>
+                  <p v-else-if="!isVip" class="mt-2 text-xs font-semibold text-amber-600">今日免费次数已用完</p>
+                </div>
+
+                <div v-else-if="!isVip && authUser.daily_ai_remaining > 0" class="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                  <p class="inline-flex items-center gap-1.5 text-xs font-black text-emerald-700">
+                    <Sparkles class="h-3.5 w-3.5" />
+                    免费试用 · 今日剩余 {{ authUser.daily_ai_remaining }} 次
+                  </p>
+                  <h4 class="mt-2 text-base font-black text-slate-900">AI 智能分析</h4>
+                  <p class="mt-2 text-xs leading-5 text-slate-600">摘要、章节、字幕、思维导图和视频问答。每日 2 次免费，开通 VIP 无限使用。</p>
+                  <button
+                    type="button"
+                    class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-emerald-600 px-4 py-2.5 text-sm font-black text-white shadow-sm shadow-emerald-600/25 hover:bg-emerald-700"
+                    @click="createSummary(item, true)"
+                  >
+                    <Bot class="h-4 w-4" />
+                    免费生成 AI 总结
+                  </button>
+                </div>
+
+                <div v-else-if="!isVip" class="mt-5 rounded-2xl border border-[#ffc9bd] bg-[#fff8f3] p-4">
+                  <p class="inline-flex items-center gap-1.5 text-xs font-black text-[#ff5a5f]">
+                    <Sparkles class="h-3.5 w-3.5" />
+                    今日免费次数已用完
+                  </p>
+                  <h4 class="mt-2 text-base font-black text-slate-900">开通 VIP 无限使用</h4>
                   <p class="mt-2 text-xs leading-5 text-slate-600">解锁摘要、章节大纲、字幕整理、思维导图和视频问答。下载功能仍可免费使用。</p>
                   <button
                     type="button"
                     class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#ff5a5f] px-4 py-2.5 text-sm font-black text-white shadow-sm shadow-[#ff5a5f]/25 hover:bg-[#ef4444]"
-                    @click="authUser ? startVipCheckout() : openAuthModal('login')"
+                    @click="startVipCheckout()"
                   >
                     <Sparkles class="h-4 w-4" />
-                    {{ authUser ? "开通 VIP" : "登录后开通" }}
+                    开通 VIP
                   </button>
                 </div>
 
@@ -1968,31 +2007,53 @@ const summaryTabs = [
                   </button>
                 </div>
 
-                <div v-if="!isVip" class="flex min-h-[360px] flex-1 items-center justify-center rounded-2xl border border-dashed border-[#ffc9bd] bg-white p-6">
+                <div v-if="aiGateState(item.url) === 'login'" class="flex min-h-[360px] flex-1 items-center justify-center rounded-2xl border border-dashed border-[#ffc9bd] bg-white p-6">
                   <div class="max-w-md text-center">
                     <div class="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full bg-[#fff1ed] text-[#ff5a5f]">
                       <Sparkles class="h-6 w-6" />
                     </div>
-                    <h3 class="text-xl font-black text-slate-900">AI 总结为 VIP 专享</h3>
-                    <p class="mt-3 text-sm leading-7 text-slate-500">开通 VIP 后即可生成摘要、章节、字幕、思维导图和视频问答。视频下载功能不受影响。</p>
-                    <button
-                      type="button"
-                      class="mt-5 rounded-full bg-[#ff5a5f] px-6 py-3 text-sm font-black text-white shadow-sm shadow-[#ff5a5f]/25 hover:bg-[#ef4444]"
-                      @click="authUser ? startVipCheckout() : openAuthModal('login')"
-                    >
-                      {{ authUser ? "立即开通 VIP" : "登录后开通 VIP" }}
+                    <h3 class="text-xl font-black text-slate-900">登录后免费试用</h3>
+                    <p class="mt-3 text-sm leading-7 text-slate-500">每日 2 次免费 AI 总结，登录即可使用。视频下载功能不受影响。</p>
+                    <button type="button" class="mt-5 rounded-full bg-[#ff5a5f] px-6 py-3 text-sm font-black text-white shadow-sm shadow-[#ff5a5f]/25 hover:bg-[#ef4444]" @click="openAuthModal('login')">
+                      登录
                     </button>
                   </div>
                 </div>
 
-                <div v-else-if="!summaryForUrl(item.url)" class="flex min-h-[360px] flex-1 items-center justify-center rounded-2xl border border-dashed border-[#cbd5e1] bg-white">
+                <div v-else-if="aiGateState(item.url) === 'trial'" class="flex min-h-[360px] flex-1 items-center justify-center rounded-2xl border border-dashed border-emerald-200 bg-white p-6">
+                  <div class="max-w-md text-center">
+                    <div class="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full bg-emerald-50 text-emerald-600">
+                      <Sparkles class="h-6 w-6" />
+                    </div>
+                    <h3 class="text-xl font-black text-slate-900">免费试用 AI 总结</h3>
+                    <p class="mt-3 text-sm leading-7 text-slate-500">今日剩余 <span class="font-black text-emerald-600">{{ authUser?.daily_ai_remaining ?? 0 }}</span> 次免费 AI 分析。开通 VIP 即可无限使用。</p>
+                    <button type="button" class="mt-5 rounded-full bg-emerald-600 px-6 py-3 text-sm font-black text-white shadow-sm shadow-emerald-600/25 hover:bg-emerald-700" @click="createSummary(item, true)">
+                      <Bot class="mr-1.5 inline h-4 w-4 align-[-3px]" />
+                      免费生成 AI 总结
+                    </button>
+                  </div>
+                </div>
+
+                <div v-else-if="aiGateState(item.url) === 'upgrade'" class="flex min-h-[360px] flex-1 items-center justify-center rounded-2xl border border-dashed border-[#ffc9bd] bg-white p-6">
+                  <div class="max-w-md text-center">
+                    <div class="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full bg-[#fff1ed] text-[#ff5a5f]">
+                      <Sparkles class="h-6 w-6" />
+                    </div>
+                    <h3 class="text-xl font-black text-slate-900">今日免费次数已用完</h3>
+                    <p class="mt-3 text-sm leading-7 text-slate-500">每日 2 次免费 AI 已用完，开通 VIP 即可无限使用。视频下载功能不受影响。</p>
+                    <button type="button" class="mt-5 rounded-full bg-[#ff5a5f] px-6 py-3 text-sm font-black text-white shadow-sm shadow-[#ff5a5f]/25 hover:bg-[#ef4444]" @click="startVipCheckout()">
+                      立即开通 VIP
+                    </button>
+                  </div>
+                </div>
+
+                <div v-else-if="aiGateState(item.url) === 'loading'" class="flex min-h-[360px] flex-1 items-center justify-center rounded-2xl border border-dashed border-[#cbd5e1] bg-white">
                   <div class="text-center">
                     <div class="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-[3px] border-slate-300 border-t-[#ff5a5f]"></div>
                     <p class="text-sm font-bold text-slate-500">正在启动自动总结...</p>
                   </div>
                 </div>
 
-                <!-- 总结摘要 -->
                 <div v-else-if="activeTabForUrl(item.url) === 'summary'" class="flex min-h-0 flex-1 flex-col rounded-2xl border border-[#f2ded3] bg-white p-4">
                   <template v-if="summaryForUrl(item.url)?.result">
                     <div class="prose prose-theme prose-sm min-h-0 max-w-none flex-1 overflow-auto pr-1 custom-scroll" v-html="renderMarkdown(summaryForUrl(item.url)?.result?.markdown || '')"></div>
@@ -2217,6 +2278,77 @@ const summaryTabs = [
         </div>
       </section>
 
+      <section id="pricing" class="border-b border-[#f2ded3] bg-white">
+        <div class="mx-auto max-w-5xl px-4 py-14 sm:px-6 lg:px-8">
+          <div class="text-center">
+            <h2 class="text-3xl font-black text-slate-950 sm:text-4xl">选择适合你的视频下载方案</h2>
+            <p class="mt-4 text-sm leading-7 text-slate-500">免费版每日 2 次 AI 总结，满足日常使用。VIP 解锁无限 AI 功能</p>
+          </div>
+
+          <div class="mt-10 grid gap-6 md:grid-cols-2">
+            <article class="flex min-h-[420px] flex-col rounded-2xl border border-[#f2ded3] bg-white p-7 shadow-sm shadow-[#f1c7b8]/20">
+              <div>
+                <h3 class="text-xl font-black text-slate-950">免费版</h3>
+                <p class="mt-2 text-sm font-medium text-slate-500">每日 2 次免费 AI 总结</p>
+                <p class="mt-8 flex items-end gap-2 text-4xl font-black text-slate-950">
+                  ¥0 <span class="pb-1 text-sm font-bold text-slate-400">/永久</span>
+                </p>
+              </div>
+              <ul class="mt-8 space-y-4 text-sm font-semibold leading-6 text-slate-500">
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />每日 2 次免费 AI 总结</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />公开视频解析</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />直链下载与云端处理下载</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />多清晰度格式选择</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />基础视频信息解析</li>
+              </ul>
+              <button type="button" class="mt-auto rounded-full border border-[#f2ded3] bg-[#fff8f3] px-5 py-3 text-sm font-black text-slate-700" disabled>
+                当前方案
+              </button>
+            </article>
+
+            <article class="relative flex min-h-[420px] flex-col overflow-hidden rounded-2xl border border-[#ffc9bd] bg-[#fff8f3] p-7 text-slate-900 shadow-xl shadow-[#f1c7b8]/35">
+              <div class="absolute -right-20 -top-20 h-52 w-52 rounded-full bg-[#ff5a5f]/10"></div>
+              <div class="relative">
+                <div class="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 class="text-xl font-black text-slate-950">VIP 高级版</h3>
+                    <p class="mt-2 text-sm font-medium leading-6 text-slate-500">
+                      AI 学习整理能力，永久解锁
+                    </p>
+                  </div>
+                  <span class="rounded-full px-3 py-1 text-xs font-black" :class="authUser?.is_vip ? 'bg-emerald-50 text-emerald-700' : 'bg-[#ff5a5f] text-white'">
+                    {{ authUser?.is_vip ? "已开通" : "推荐" }}
+                  </span>
+                </div>
+                <p class="mt-8 flex flex-wrap items-end gap-2 text-4xl font-black text-slate-950">
+                  ¥9.9 <span class="pb-1 text-sm font-bold text-[#ff5a5f]">永久</span>
+                </p>
+                <p v-if="authUser?.is_vip" class="mt-3 inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-700">
+                  <CheckCircle2 class="h-3.5 w-3.5" />
+                  AI 功能已解锁
+                </p>
+              </div>
+              <ul class="relative mt-8 space-y-4 text-sm font-semibold leading-6 text-slate-600">
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />AI 视频内容总结</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />章节大纲与核心要点</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />字幕整理与 TXT / SRT 导出</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />思维导图生成与导出</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />基于视频内容的 AI 问答</li>
+              </ul>
+              <button
+                type="button"
+                class="relative mt-auto rounded-full px-5 py-3 text-sm font-black shadow-lg transition disabled:cursor-not-allowed"
+                :class="authUser?.is_vip ? 'border border-emerald-200 bg-emerald-50 text-emerald-700 shadow-emerald-500/10' : 'bg-[#ff5a5f] text-white shadow-[#ff5a5f]/25 hover:bg-[#ef4444]'"
+                :disabled="billingLoading || Boolean(authUser?.is_vip)"
+                @click="startVipCheckout"
+              >
+                {{ authUser?.is_vip ? "已开通 VIP" : billingLoading ? "正在创建支付..." : "立即开通 VIP" }}
+              </button>
+            </article>
+          </div>
+        </div>
+      </section>
+
       <section id="features" class="mx-auto max-w-7xl px-4 py-14 sm:px-6 lg:px-8">
         <div class="text-center">
           <h2 class="text-3xl font-black text-slate-900 sm:text-4xl">为什么选择影知视频下载器</h2>
@@ -2434,7 +2566,7 @@ const summaryTabs = [
             <div class="mt-5 rounded-2xl border px-4 py-3 text-sm font-black" :class="authUser?.is_vip ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'">
               <span class="inline-flex items-center gap-2">
                 <Sparkles class="h-4 w-4" />
-                {{ authUser?.is_vip ? "VIP 已开通" : "免费用户" }}
+                {{ authUser?.is_vip ? "VIP 已开通" : `免费用户 · 今日剩余 ${authUser?.daily_ai_remaining ?? 0} 次` }}
               </span>
               <p v-if="authUser?.vip_activated_at" class="mt-2 text-xs font-semibold opacity-80">
                 开通时间：{{ formatPaymentTime(authUser.vip_activated_at) }}
@@ -2501,14 +2633,30 @@ const summaryTabs = [
                       <p class="text-base font-black text-slate-900">{{ formatPaymentAmount(payment) }}</p>
                       <p class="mt-1 truncate text-xs font-semibold text-slate-500">流水号：{{ shortPaymentId(payment) }}</p>
                     </div>
-                    <span class="w-fit rounded-full border px-3 py-1 text-xs font-black" :class="paymentStatusClass(payment.status)">
-                      {{ paymentStatusLabel(payment.status) }}
-                    </span>
+                    <div class="flex shrink-0 flex-wrap items-center gap-2">
+                      <span class="w-fit rounded-full border px-3 py-1 text-xs font-black" :class="paymentStatusClass(payment.status)">
+                        {{ paymentStatusLabel(payment.status) }}
+                      </span>
+                      <button
+                        v-if="canRefundPayment(payment)"
+                        type="button"
+                        class="rounded-full border border-rose-200 bg-white px-3 py-1 text-xs font-black text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        :disabled="refundingPayments[payment.id]"
+                        @click="requestRefund(payment)"
+                      >
+                        {{ refundingPayments[payment.id] ? "退款中..." : "申请退款" }}
+                      </button>
+                    </div>
                   </div>
                   <div class="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-slate-500">
                     <span>创建：{{ formatPaymentTime(payment.created_at) }}</span>
                     <span>更新：{{ formatPaymentTime(payment.updated_at) }}</span>
+                    <span v-if="payment.refund_requested_at">退款申请：{{ formatPaymentTime(payment.refund_requested_at) }}</span>
+                    <span v-if="payment.refunded_at">退款完成：{{ formatPaymentTime(payment.refunded_at) }}</span>
                   </div>
+                  <p v-if="payment.refund_error" class="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-600">
+                    {{ payment.refund_error }}
+                  </p>
                 </article>
               </div>
             </section>

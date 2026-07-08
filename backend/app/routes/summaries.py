@@ -15,7 +15,7 @@ from app.schemas import (
     CreateSummaryResponse,
     SummaryStatus,
 )
-from app.dependencies import get_current_vip_user
+from app.dependencies import get_ai_access_user, get_current_user
 from app.services.auth_service import UserRecord
 from app.services.deepseek_service import DeepSeekUnavailable, deepseek_service
 from app.services.summary_store import summary_store
@@ -139,7 +139,7 @@ def _run_summary_job_stream(summary_id: str, url: str, language: str) -> None:
 def create_summary(
     payload: CreateSummaryRequest,
     background_tasks: BackgroundTasks,
-    user: UserRecord = Depends(get_current_vip_user),
+    user: UserRecord = Depends(get_ai_access_user),
 ) -> CreateSummaryResponse:
     job = summary_store.create(str(payload.url), user_id=user.id)
     background_tasks.add_task(
@@ -152,7 +152,7 @@ def create_summary(
 
 
 @router.get("/summaries/{summary_id}", response_model=SummaryStatus)
-def get_summary(summary_id: str, user: UserRecord = Depends(get_current_vip_user)) -> SummaryStatus:
+def get_summary(summary_id: str, user: UserRecord = Depends(get_current_user)) -> SummaryStatus:
     job = summary_store.get(summary_id)
     if job is None:
         raise HTTPException(status_code=404, detail="AI 分析任务不存在")
@@ -165,7 +165,7 @@ def get_summary(summary_id: str, user: UserRecord = Depends(get_current_vip_user
 async def stream_summary(
     summary_id: str,
     request: Request,
-    user: UserRecord = Depends(get_current_vip_user),
+    user: UserRecord = Depends(get_current_user),
 ):
     """SSE endpoint that streams summary generation events."""
     job = summary_store.get(summary_id)
@@ -198,7 +198,7 @@ async def stream_summary(
 def ask_summary(
     summary_id: str,
     payload: AskSummaryRequest,
-    user: UserRecord = Depends(get_current_vip_user),
+    user: UserRecord = Depends(get_current_user),
 ) -> AskSummaryResponse:
     job = summary_store.get(summary_id)
     if job is None:
@@ -234,7 +234,7 @@ async def ask_summary_stream(
     summary_id: str,
     payload: AskSummaryRequest,
     request: Request,
-    user: UserRecord = Depends(get_current_vip_user),
+    user: UserRecord = Depends(get_current_user),
 ):
     """SSE endpoint that streams AI Q&A answer token by token."""
     job = summary_store.get(summary_id)

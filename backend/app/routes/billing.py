@@ -10,8 +10,9 @@ from app.schemas import (
     MembershipStatus,
     PaymentHistoryResponse,
     PaymentRecord,
+    RefundPaymentResponse,
 )
-from app.services.auth_service import UserRecord
+from app.services.auth_service import UserRecord, get_user_by_id
 from app.services.billing_service import (
     BillingError,
     StripeConfigurationError,
@@ -59,6 +60,18 @@ def confirm_checkout_session(
 def payment_history(user: UserRecord = Depends(get_current_user)) -> PaymentHistoryResponse:
     rows = billing_service.list_user_payments(user.id)
     return PaymentHistoryResponse(payments=[PaymentRecord(**row) for row in rows])
+
+
+@router.post("/billing/payments/{payment_id}/refund", response_model=RefundPaymentResponse)
+def refund_payment(payment_id: str, user: UserRecord = Depends(get_current_user)) -> RefundPaymentResponse:
+    try:
+        payment = billing_service.request_refund(user, payment_id)
+    except StripeConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except BillingError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    refreshed_user = get_user_by_id(user.id) or user
+    return RefundPaymentResponse(payment=PaymentRecord(**payment), user=_public_user(refreshed_user))
 
 
 @router.post("/billing/webhook")

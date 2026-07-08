@@ -269,3 +269,55 @@ def activate_vip(user_id: str, stripe_customer_id: str | None = None) -> UserRec
             (now, stripe_customer_id, now, user_id),
         )
     return get_user_by_id(user_id)
+
+
+def deactivate_vip(user_id: str) -> UserRecord | None:
+    now = _now_iso()
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE users
+            SET is_vip = 0,
+                vip_activated_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, user_id),
+        )
+    return get_user_by_id(user_id)
+
+
+def check_and_increment_daily_ai_usage(user_id: str) -> bool:
+    """Try to consume one daily AI usage. Returns True if allowed, False if limit reached."""
+    today = _now().strftime("%Y-%m-%d")
+    now = _now_iso()
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT count FROM daily_ai_usage WHERE user_id = ? AND usage_date = ?",
+            (user_id, today),
+        ).fetchone()
+        if row is not None and row["count"] >= 2:
+            return False
+        if row is None:
+            conn.execute(
+                "INSERT INTO daily_ai_usage (id, user_id, usage_date, count, updated_at) VALUES (?, ?, ?, 1, ?)",
+                (uuid4().hex, user_id, today, now),
+            )
+        else:
+            conn.execute(
+                "UPDATE daily_ai_usage SET count = count + 1, updated_at = ? WHERE user_id = ? AND usage_date = ?",
+                (now, user_id, today),
+            )
+    return True
+
+
+def get_daily_ai_remaining(user_id: str) -> int:
+    """Return remaining free AI uses for today (0-2)."""
+    today = _now().strftime("%Y-%m-%d")
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT count FROM daily_ai_usage WHERE user_id = ? AND usage_date = ?",
+            (user_id, today),
+        ).fetchone()
+    used = row["count"] if row else 0
+    return max(0, 2 - used)

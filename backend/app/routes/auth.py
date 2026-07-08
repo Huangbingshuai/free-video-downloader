@@ -58,6 +58,7 @@ def _public_user(user: UserRecord) -> AuthUser:
         avatar_url=user.avatar_url,
         is_vip=user.is_vip,
         vip_activated_at=user.vip_activated_at,
+        daily_ai_remaining=auth_service.get_daily_ai_remaining(user.id) if not user.is_vip else 999,
     )
 
 

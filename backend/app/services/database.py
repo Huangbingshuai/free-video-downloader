@@ -67,6 +67,11 @@ def init_db() -> None:
                     stripe_payment_intent_id TEXT,
                     amount_total INTEGER,
                     currency TEXT,
+                    stripe_refund_id TEXT,
+                    refund_status TEXT,
+                    refund_error TEXT,
+                    refund_requested_at TEXT,
+                    refunded_at TEXT,
                     status TEXT NOT NULL,
                     checkout_url TEXT,
                     expires_at INTEGER,
@@ -90,6 +95,15 @@ def init_db() -> None:
                     expires_at TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS daily_ai_usage (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    usage_date TEXT NOT NULL,
+                    count INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(user_id, usage_date)
+                );
                 """
             )
             payment_columns = {
@@ -101,6 +115,16 @@ def init_db() -> None:
                 conn.execute("ALTER TABLE payments ADD COLUMN amount_total INTEGER")
             if "currency" not in payment_columns:
                 conn.execute("ALTER TABLE payments ADD COLUMN currency TEXT")
+            if "stripe_refund_id" not in payment_columns:
+                conn.execute("ALTER TABLE payments ADD COLUMN stripe_refund_id TEXT")
+            if "refund_status" not in payment_columns:
+                conn.execute("ALTER TABLE payments ADD COLUMN refund_status TEXT")
+            if "refund_error" not in payment_columns:
+                conn.execute("ALTER TABLE payments ADD COLUMN refund_error TEXT")
+            if "refund_requested_at" not in payment_columns:
+                conn.execute("ALTER TABLE payments ADD COLUMN refund_requested_at TEXT")
+            if "refunded_at" not in payment_columns:
+                conn.execute("ALTER TABLE payments ADD COLUMN refunded_at TEXT")
             user_columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()
             }
