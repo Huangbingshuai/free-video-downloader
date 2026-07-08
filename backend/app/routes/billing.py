@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.dependencies import get_current_user, get_optional_user
 from app.routes.auth import _public_user
-from app.schemas import CheckoutSessionResponse, MembershipStatus
+from app.schemas import CheckoutSessionResponse, ConfirmCheckoutSessionRequest, MembershipStatus
 from app.services.auth_service import UserRecord
 from app.services.billing_service import (
     BillingError,
@@ -30,6 +30,19 @@ def membership_status(user: UserRecord | None = Depends(get_optional_user)) -> M
 def create_checkout_session(user: UserRecord = Depends(get_current_user)) -> CheckoutSessionResponse:
     try:
         return billing_service.create_checkout_session(user)
+    except StripeConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except BillingError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/billing/confirm-checkout-session", response_model=CheckoutSessionResponse)
+def confirm_checkout_session(
+    payload: ConfirmCheckoutSessionRequest,
+    user: UserRecord = Depends(get_current_user),
+) -> CheckoutSessionResponse:
+    try:
+        return billing_service.confirm_checkout_session(user, payload.session_id)
     except StripeConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except BillingError as exc:

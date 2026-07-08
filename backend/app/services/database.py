@@ -60,6 +60,7 @@ def init_db() -> None:
                 CREATE TABLE IF NOT EXISTS payments (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
+                    stripe_price_id TEXT,
                     stripe_checkout_session_id TEXT UNIQUE,
                     stripe_payment_intent_id TEXT,
                     status TEXT NOT NULL,
@@ -77,6 +78,11 @@ def init_db() -> None:
                 );
                 """
             )
+            payment_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(payments)").fetchall()
+            }
+            if "stripe_price_id" not in payment_columns:
+                conn.execute("ALTER TABLE payments ADD COLUMN stripe_price_id TEXT")
         _INITIALIZED_PATHS.add(path_key)
 
 

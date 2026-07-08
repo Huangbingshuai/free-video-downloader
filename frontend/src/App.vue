@@ -303,10 +303,35 @@ async function handleCheckoutReturn() {
   const params = new URLSearchParams(window.location.search);
   const checkout = params.get("checkout");
   if (!checkout) return;
-  await loadAuth();
   if (checkout === "success") {
-    showToast(authUser.value?.is_vip ? "VIP 已开通" : "支付已完成，正在等待 Stripe 回调确认");
+    const sessionId = params.get("session_id");
+    if (sessionId) {
+      try {
+        const response = await fetch("/api/billing/confirm-checkout-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ session_id: sessionId }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.detail || "支付确认失败");
+        if (payload.is_vip) {
+          await loadAuth();
+          showToast("支付成功，VIP 已开通");
+        } else {
+          await loadAuth();
+          showToast("支付已完成，正在等待 Stripe 最终确认");
+        }
+      } catch (error) {
+        await loadAuth();
+        showToast(error instanceof Error ? error.message : "支付确认失败，请稍后刷新");
+      }
+    } else {
+      await loadAuth();
+      showToast(authUser.value?.is_vip ? "VIP 已开通" : "支付已完成，正在等待 Stripe 回调确认");
+    }
   } else if (checkout === "cancel") {
+    await loadAuth();
     showToast("已取消支付");
   }
   window.history.replaceState({}, "", `${window.location.pathname}${window.location.hash || ""}`);
@@ -1261,7 +1286,7 @@ const summaryTabs = [
           </button>
           <button type="button" class="inline-flex items-center gap-2 rounded-full bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700 shadow-sm hover:bg-blue-100" @click="authUser?.is_vip ? showToast('VIP 已生效') : startVipCheckout()">
             <Sparkles class="h-4 w-4" />
-            {{ billingLoading ? "处理中..." : "开通 VIP" }}
+            {{ authUser?.is_vip ? "VIP 已开通" : billingLoading ? "处理中..." : "开通 VIP" }}
           </button>
         </div>
       </nav>

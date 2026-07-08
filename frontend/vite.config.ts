@@ -7,6 +7,7 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const siteUrl = (env.VITE_SITE_URL || "http://localhost:5173").replace(/\/$/, "");
+  const outDir = env.VITE_OUT_DIR || "dist";
 
   return {
     plugins: [
@@ -23,7 +24,7 @@ export default defineConfig(({ mode }) => {
         name: "build-seo-assets",
         apply: "build",
         closeBundle() {
-          const distDir = resolve(process.cwd(), "dist");
+          const distDir = resolve(process.cwd(), outDir);
           mkdirSync(distDir, { recursive: true });
           try {
             writeFileSync(
@@ -66,6 +67,9 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
         },
       },
+    },
+    build: {
+      outDir,
     },
   };
 });

@@ -188,3 +188,7 @@ class CheckoutSessionResponse(BaseModel):
     checkout_url: str | None = None
     session_id: str | None = None
     is_vip: bool = False
+
+
+class ConfirmCheckoutSessionRequest(BaseModel):
+    session_id: str = Field(..., min_length=8, max_length=255)

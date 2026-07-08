@@ -80,6 +80,40 @@ def test_create_checkout_session_reuses_pending_payment(monkeypatch):
     assert len(calls) == 1
 
 
+def test_checkout_session_does_not_reuse_pending_payment_after_price_change(monkeypatch):
+    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_mock")
+    monkeypatch.setenv("STRIPE_VIP_PRICE_ID", "price_usd_mock")
+    monkeypatch.setenv("STRIPE_MOCK_MODE", "false")
+
+    calls: list[str] = []
+
+    def fake_create(payment_id, user):
+        calls.append(payment_id)
+        index = len(calls)
+        return {
+            "id": f"cs_test_price_{index}",
+            "url": f"https://checkout.stripe.test/session-{index}",
+            "expires_at": int(time.time()) + 3600,
+        }
+
+    monkeypatch.setattr(billing.billing_service, "_create_stripe_checkout_session", fake_create)
+
+    with TestClient(app) as client:
+        _register(client, "checkout-price-change@example.com")
+        first = client.post("/api/billing/create-checkout-session")
+        second = client.post("/api/billing/create-checkout-session")
+        monkeypatch.setenv("STRIPE_VIP_PRICE_ID", "CNY 9.90")
+        third = client.post("/api/billing/create-checkout-session")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 200
+    assert first.json()["session_id"] == "cs_test_price_1"
+    assert second.json()["session_id"] == "cs_test_price_1"
+    assert third.json()["session_id"] == "cs_test_price_2"
+    assert len(calls) == 2
+
+
 def test_checkout_returns_existing_vip_without_payment():
     with TestClient(app) as client:
         response = _register(client, "already-vip@example.com")
@@ -89,6 +123,74 @@ def test_checkout_returns_existing_vip_without_payment():
     assert checkout.status_code == 200
     assert checkout.json()["status"] == "already_vip"
     assert checkout.json()["is_vip"] is True
+
+
+def test_mock_checkout_activates_vip(monkeypatch):
+    monkeypatch.setenv("STRIPE_MOCK_MODE", "true")
+
+    with TestClient(app) as client:
+        _register(client, "mock-vip@example.com")
+        checkout = client.post("/api/billing/create-checkout-session")
+        status = client.get("/api/membership/status")
+
+    assert checkout.status_code == 200
+    assert checkout.json()["status"] == "mock_paid"
+    assert checkout.json()["is_vip"] is True
+    assert status.json()["is_vip"] is True
+
+
+def test_confirm_checkout_session_activates_vip(monkeypatch):
+    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_mock")
+
+    def fake_retrieve(session_id):
+        return {
+            "id": session_id,
+            "mode": "payment",
+            "payment_status": "paid",
+            "payment_intent": "pi_confirm_paid",
+            "customer": "cus_confirm_paid",
+            "client_reference_id": None,
+            "metadata": {"user_id": user_id, "purchase_type": "vip_lifetime"},
+        }
+
+    with TestClient(app) as client:
+        auth = _register(client, "confirm-vip@example.com")
+        user_id = auth.json()["user"]["id"]
+        monkeypatch.setattr(billing.billing_service, "_retrieve_stripe_checkout_session", fake_retrieve)
+        confirm = client.post(
+            "/api/billing/confirm-checkout-session",
+            json={"session_id": "cs_test_confirm_paid"},
+        )
+        status = client.get("/api/membership/status")
+
+    assert confirm.status_code == 200
+    assert confirm.json()["is_vip"] is True
+    assert status.json()["is_vip"] is True
+
+
+def test_confirm_checkout_session_rejects_wrong_user(monkeypatch):
+    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_mock")
+
+    def fake_retrieve(session_id):
+        return {
+            "id": session_id,
+            "mode": "payment",
+            "payment_status": "paid",
+            "metadata": {"user_id": "another-user", "purchase_type": "vip_lifetime"},
+        }
+
+    monkeypatch.setattr(billing.billing_service, "_retrieve_stripe_checkout_session", fake_retrieve)
+
+    with TestClient(app) as client:
+        _register(client, "confirm-wrong-user@example.com")
+        confirm = client.post(
+            "/api/billing/confirm-checkout-session",
+            json={"session_id": "cs_test_confirm_wrong_user"},
+        )
+        status = client.get("/api/membership/status")
+
+    assert confirm.status_code == 400
+    assert status.json()["is_vip"] is False
 
 
 def test_webhook_rejects_bad_signature(monkeypatch):
@@ -135,4 +237,34 @@ def test_checkout_completed_webhook_activates_vip_once(monkeypatch):
     assert first.json()["duplicate"] is False
     assert second.status_code == 200
     assert second.json()["duplicate"] is True
+    assert status.json()["is_vip"] is True
+
+
+def test_async_payment_succeeded_webhook_activates_vip(monkeypatch):
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    monkeypatch.setenv("STRIPE_MOCK_MODE", "false")
+    with TestClient(app) as client:
+        auth = _register(client, "async-webhook-vip@example.com")
+        user_id = auth.json()["user"]["id"]
+        event = {
+            "id": "evt_async_checkout_succeeded",
+            "type": "checkout.session.async_payment_succeeded",
+            "data": {
+                "object": {
+                    "id": "cs_test_async_paid",
+                    "mode": "payment",
+                    "payment_status": "paid",
+                    "payment_intent": "pi_test_async_paid",
+                    "customer": "cus_test_async_paid",
+                    "client_reference_id": user_id,
+                    "metadata": {"user_id": user_id, "purchase_type": "vip_lifetime"},
+                }
+            },
+        }
+        payload = json.dumps(event).encode("utf-8")
+        headers = {"stripe-signature": _stripe_signature(payload, "whsec_test")}
+        response = client.post("/api/billing/webhook", data=payload, headers=headers)
+        status = client.get("/api/membership/status")
+
+    assert response.status_code == 200
     assert status.json()["is_vip"] is True
