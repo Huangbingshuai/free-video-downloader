@@ -125,11 +125,6 @@ function isSummaryLoading(url: string) {
 }
 
 function handleTabClick(url: string, tab: "summary" | "transcript" | "mindmap" | "qa") {
-  const job = summaryForUrl(url);
-  if (!job?.result) {
-    showToast("请等待 AI 分析完成后查看");
-    return;
-  }
   setSummaryTab(url, tab);
 }
 
@@ -420,6 +415,14 @@ function handleSummaryEvent(summaryId: string, event: any) {
     );
   } else if (event.type === "stream") {
     streamingText[summaryId] = (streamingText[summaryId] || "") + event.text;
+  } else if (event.type === "transcript") {
+    // 字幕提前到达，前端立即可查看，不受流式状态限制
+    earlyTranscripts[summaryId] = (event.segments || []).map((s: any) => ({
+      start: s.start as number,
+      end: s.end as number | null,
+      text: s.text as string,
+    }));
+    if (event.title) earlyTitles[summaryId] = event.title;
   } else if (event.type === "mindmap") {
     mindmapMarkdowns[summaryId] = event.markdown || "";
   } else if (event.type === "done") {
@@ -571,33 +574,42 @@ function downloadMarkdownForUrl(url: string) {
   if (summary) downloadMarkdown(summary);
 }
 
+function transcriptForUrl(url: string): TranscriptSegment[] {
+  const sid = summaryIdForUrl(url);
+  return earlyTranscripts[sid] || summaryForUrl(url)?.result?.transcript || [];
+}
+
 function copyTranscriptForUrl(url: string) {
-  const transcript = summaryForUrl(url)?.result?.transcript;
+  const transcript = transcriptForUrl(url);
   if (!transcript?.length) return;
   const text = transcript.map((seg) => `[${formatTimestamp(seg.start)}] ${seg.text}`).join("\n");
   navigator.clipboard.writeText(text).then(() => showToast("已复制字幕文本"));
 }
 
 function downloadTranscriptSrt(url: string) {
-  const transcript = summaryForUrl(url)?.result?.transcript;
+  const transcript = transcriptForUrl(url);
   if (!transcript?.length) return;
   const srt = transcriptToSrt(transcript);
-  const filename = (summaryForUrl(url)?.result?.title || "字幕").replace(/[/\\?%*:|"<>]/g, "_") + "_字幕.srt";
+  const title = earlyTitles[summaryIdForUrl(url)] || summaryForUrl(url)?.result?.title || "字幕";
+  const filename = title.replace(/[/\\?%*:|"<>]/g, "_") + "_字幕.srt";
   triggerDownloadBlob(new Blob([srt], { type: "text/plain; charset=utf-8" }), filename);
 }
 
 function downloadTranscriptTxt(url: string) {
-  const transcript = summaryForUrl(url)?.result?.transcript;
+  const transcript = transcriptForUrl(url);
   if (!transcript?.length) return;
   const text = transcript.map((seg) => `[${formatTimestamp(seg.start)}] ${seg.text}`).join("\n");
-  const filename = (summaryForUrl(url)?.result?.title || "字幕").replace(/[/\\?%*:|"<>]/g, "_") + "_字幕.txt";
+  const title = earlyTitles[summaryIdForUrl(url)] || summaryForUrl(url)?.result?.title || "字幕";
+  const filename = title.replace(/[/\\?%*:|"<>]/g, "_") + "_字幕.txt";
   triggerDownloadBlob(new Blob([text], { type: "text/plain; charset=utf-8" }), filename);
 }
 
 // markmap 状态：每个 summary 独立存储 mindmap markdown、SVG 元素引用和实例
-const mindmapMarkdowns: Record<string, string> = {};
+const mindmapMarkdowns: Record<string, string> = reactive({});
 const markmapInstances: Record<string, { instance: any; svgEl: SVGElement | null }> = {};
 const mindmapFullscreen: Record<string, boolean> = reactive({});
+const earlyTranscripts: Record<string, TranscriptSegment[]> = reactive({});
+const earlyTitles: Record<string, string> = reactive({});
 
 type MindmapExportSvg = {
   svgStr: string;
@@ -605,16 +617,28 @@ type MindmapExportSvg = {
   height: number;
 };
 
+const mindmapRenderTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+const mindmapRendering: Record<string, boolean> = reactive({});
+
 function renderMarkmap(summaryId: string, md: string) {
   const entry = markmapInstances[summaryId];
   if (!entry?.svgEl || !md) return;
-  try {
-    // 清除旧内容
-    while (entry.svgEl.firstChild) entry.svgEl.removeChild(entry.svgEl.firstChild);
-    const transformer = new Transformer();
-    const { root } = transformer.transform(md);
-    entry.instance = Markmap.create(entry.svgEl, { autoFit: true, duration: 300 }, root);
-  } catch { /* ignore */ }
+  // 取消防抖队列中待执行的旧渲染任务
+  if (mindmapRenderTimers[summaryId]) {
+    clearTimeout(mindmapRenderTimers[summaryId]);
+  }
+  const svgEl = entry.svgEl;
+  mindmapRendering[summaryId] = true;
+  mindmapRenderTimers[summaryId] = setTimeout(() => {
+    try {
+      while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
+      const transformer = new Transformer();
+      const { root } = transformer.transform(md);
+      entry.instance = Markmap.create(svgEl, { autoFit: true, duration: 300 }, root);
+    } catch { /* ignore */ }
+    delete mindmapRenderTimers[summaryId];
+    mindmapRendering[summaryId] = false;
+  }, 80); // 80ms 防抖 + setTimeout 让出主线程给 UI 交互
 }
 
 function setMarkmapRef(summaryId: string, el: SVGElement | null) {
@@ -683,7 +707,7 @@ function replaceForeignObjectsWithText(svgEl: SVGElement) {
     textEl.setAttribute("y", String(y + h / 2 + 5));
     textEl.setAttribute("font-size", "14");
     textEl.setAttribute("font-family", "sans-serif");
-    textEl.setAttribute("fill", "#e2e8f0");
+    textEl.setAttribute("fill", "#1e293b");
     textEl.textContent = text;
     fo.parentNode?.replaceChild(textEl, fo);
   });
@@ -723,6 +747,15 @@ function serializeSvgForExport(entry: { instance: any; svgEl: SVGElement | null 
   return { svgStr, width, height };
 }
 
+function setSvgPixelSize(svgStr: string, width: number, height: number) {
+  return svgStr.replace(/<svg\b([^>]*)>/i, (match, attrs: string) => {
+    const nextAttrs = attrs
+      .replace(/\swidth="[^"]*"/i, "")
+      .replace(/\sheight="[^"]*"/i, "");
+    return `<svg${nextAttrs} width="${width}" height="${height}">`;
+  });
+}
+
 // ── 导出 SVG ──
 function downloadMindmapSvg(summaryId: string) {
   const entry = markmapInstances[summaryId];
@@ -739,22 +772,26 @@ async function downloadMindmapPng(summaryId: string) {
   const exportSvg = serializeSvgForExport(entry);
   if (!exportSvg) return;
   const { svgStr, width: vw, height: vh } = exportSvg;
-  // 高清缩放
-  const scale = Math.max(3, Math.ceil(3840 / vw));
+  // 4K 高清：宽度至少 3840px，最小 4x 缩放保证细节锐利
+  const scale = Math.max(4, Math.ceil(3840 / Math.min(vw, vh)));
+  const width = Math.ceil(vw * scale);
+  const height = Math.ceil(vh * scale);
+  const pngSvgStr = setSvgPixelSize(svgStr, width, height);
   const canvas = document.createElement("canvas");
-  canvas.width = vw * scale;
-  canvas.height = vh * scale;
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
-  ctx.fillStyle = "#11141a";
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   // 在 img 标签内加载处理后的 SVG
   const img = new Image();
-  const blob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+  const blob = new Blob([pngSvgStr], { type: "image/svg+xml;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   await new Promise<void>((resolve) => {
     img.onload = () => {
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
       URL.revokeObjectURL(url);
       resolve();
     };
@@ -765,6 +802,15 @@ async function downloadMindmapPng(summaryId: string) {
     if (png) triggerDownloadBlob(png, "mindmap.png");
   }, "image/png");
 }
+
+// 监听 streaming mindmap 数据更新，实时刷新渲染
+watch(mindmapMarkdowns, (newVal, oldVal) => {
+  for (const [summaryId, md] of Object.entries(newVal)) {
+    if (md && md !== oldVal?.[summaryId]) {
+      renderMarkmap(summaryId, md);
+    }
+  }
+});
 
 function triggerDownloadBlob(blob: Blob, filename: string) {
   const a = document.createElement("a");
@@ -805,18 +851,18 @@ const summaryTabs = [
 </script>
 
 <template>
-  <div class="min-h-screen bg-[#0f1115] text-slate-100">
-    <header class="sticky top-0 z-20 border-b border-[#2a303a] bg-[#0f1115]/92 backdrop-blur">
+  <div class="min-h-screen bg-[#f8fafc] text-slate-800">
+    <header class="sticky top-0 z-20 border-b border-[#e2e8f0] bg-[#f8fafc]/92 backdrop-blur">
       <nav class="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
         <a href="#" class="flex items-center gap-3">
           <span class="grid h-9 w-9 place-items-center rounded-lg bg-blue-500 text-sm font-black text-white">AI</span>
-          <span class="text-base font-black text-white">AI 视频解析总结</span>
+          <span class="text-base font-black text-slate-800">AI 视频解析总结</span>
         </a>
-        <div class="hidden items-center gap-8 text-sm font-medium text-slate-400 md:flex">
-          <a href="#tool" class="hover:text-blue-300">视频解析</a>
-          <a href="#results" class="hover:text-blue-300">AI 总结</a>
-          <a href="#platforms" class="hover:text-blue-300">平台能力</a>
-          <a href="#notice" class="hover:text-blue-300">安全边界</a>
+        <div class="hidden items-center gap-8 text-sm font-medium text-slate-500 md:flex">
+          <a href="#tool" class="hover:text-blue-600">视频解析</a>
+          <a href="#results" class="hover:text-blue-600">AI 总结</a>
+          <a href="#platforms" class="hover:text-blue-600">平台能力</a>
+          <a href="#notice" class="hover:text-blue-600">安全边界</a>
         </div>
         <a href="#tool" class="rounded-full bg-blue-500 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-blue-400">
           开始解析
@@ -832,37 +878,37 @@ const summaryTabs = [
     </Transition>
 
     <main>
-      <section id="tool" class="border-b border-[#2a303a]">
+      <section id="tool" class="border-b border-[#e2e8f0]">
         <div class="mx-auto max-w-7xl px-4 py-12 sm:px-6 sm:py-16 lg:px-8">
           <div class="mx-auto max-w-4xl text-center">
-            <p class="mb-4 text-sm font-bold text-emerald-300">字幕提取 · AI 摘要 · 思维导图 · 视频问答</p>
-            <h1 class="text-4xl font-black tracking-normal text-white sm:text-5xl lg:text-6xl">
+            <p class="mb-4 text-sm font-bold text-emerald-600">字幕提取 · AI 摘要 · 思维导图 · 视频问答</p>
+            <h1 class="text-4xl font-black tracking-normal text-slate-800 sm:text-5xl lg:text-6xl">
               AI 视频解析总结
             </h1>
-            <p class="mx-auto mt-5 max-w-2xl text-base leading-8 text-slate-400 sm:text-lg">
+            <p class="mx-auto mt-5 max-w-2xl text-base leading-8 text-slate-500 sm:text-lg">
               提取视频字幕，生成摘要、大纲、思维导图和问答素材；需要时可继续下载视频文件。
             </p>
           </div>
 
-          <div class="mx-auto mt-9 max-w-4xl rounded-3xl border border-[#2a303a] bg-[#171a20] p-4 shadow-2xl shadow-black/20 sm:p-6">
-            <label class="text-sm font-bold text-slate-200" for="urls">粘贴公开视频链接</label>
+          <div class="mx-auto mt-9 max-w-4xl rounded-3xl border border-[#e2e8f0] bg-white p-4 shadow-2xl shadow-slate-300/40 sm:p-6">
+            <label class="text-sm font-bold text-slate-700" for="urls">粘贴公开视频链接</label>
             <textarea
               id="urls"
               v-model="urlInput"
               rows="6"
-              class="mt-3 w-full resize-y rounded-2xl border border-[#2a303a] bg-[#11141a] px-4 py-4 text-sm leading-7 text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10"
+              class="mt-3 w-full resize-y rounded-2xl border border-[#e2e8f0] bg-white px-4 py-4 text-sm leading-7 text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10"
               placeholder="每行一个链接，支持直接粘贴带文字的分享内容，例如：【视频标题】https://www.bilibili.com/video/BVxxx"
             />
             <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div class="flex flex-wrap gap-2 text-xs font-semibold">
-                <span class="rounded-full border border-blue-400/30 bg-blue-400/10 px-3 py-1.5 text-blue-200">AI 总结优先</span>
-                <span class="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-emerald-200">平台字幕提取</span>
-                <span class="rounded-full border border-slate-500/40 bg-slate-700/30 px-3 py-1.5 text-slate-300">下载可选</span>
+                <span class="rounded-full border border-blue-400/30 bg-blue-400/10 px-3 py-1.5 text-blue-700">AI 总结优先</span>
+                <span class="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-emerald-700">平台字幕提取</span>
+                <span class="rounded-full border border-slate-300 bg-slate-100 px-3 py-1.5 text-slate-600">下载可选</span>
               </div>
               <div class="flex flex-col gap-2 sm:flex-row">
                 <button
                   type="button"
-                  class="rounded-full border border-[#2a303a] px-5 py-3 text-sm font-bold text-slate-300 hover:border-blue-400 hover:text-blue-200"
+                  class="rounded-full border border-[#e2e8f0] px-5 py-3 text-sm font-bold text-slate-600 hover:border-blue-400 hover:text-blue-700"
                   @click="loadSample"
                 >
                   填入测试链接
@@ -870,14 +916,14 @@ const summaryTabs = [
                 <button
                   type="button"
                   :disabled="!canAnalyze"
-                  class="rounded-full bg-blue-500 px-6 py-3 text-sm font-black text-white shadow-lg shadow-blue-950/40 transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none"
+                  class="rounded-full bg-blue-500 px-6 py-3 text-sm font-black text-white shadow-lg shadow-blue-950/40 transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 disabled:shadow-none"
                   @click="analyze"
                 >
                   {{ analyzing ? "解析中..." : "解析视频" }}
                 </button>
               </div>
             </div>
-            <p v-if="analyzeError" class="mt-4 rounded-2xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm font-medium text-red-200">
+            <p v-if="analyzeError" class="mt-4 rounded-2xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm font-medium text-red-600">
               {{ analyzeError }}
             </p>
           </div>
@@ -887,17 +933,17 @@ const summaryTabs = [
       <section v-if="results.length" id="results" class="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
         <div class="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p class="text-sm font-bold text-blue-300">解析结果</p>
-            <h2 class="mt-1 text-2xl font-black text-white sm:text-3xl">选择接下来的工作流</h2>
-            <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
+            <p class="text-sm font-bold text-blue-600">解析结果</p>
+            <h2 class="mt-1 text-2xl font-black text-slate-800 sm:text-3xl">选择接下来的工作流</h2>
+            <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
               默认进入 AI 视频总结，下载作为独立的可选功能，不再和总结操作混在一起。
             </p>
           </div>
-          <div class="grid rounded-2xl border border-[#2a303a] bg-[#171a20] p-1 sm:grid-cols-2">
+          <div class="grid rounded-2xl border border-[#e2e8f0] bg-white p-1 sm:grid-cols-2">
             <button
               type="button"
               class="rounded-xl px-5 py-3 text-sm font-black transition"
-              :class="activeWorkflowTab === 'summary' ? 'bg-blue-500 text-white shadow-lg shadow-blue-950/30' : 'text-slate-400 hover:text-slate-100'"
+              :class="activeWorkflowTab === 'summary' ? 'bg-blue-500 text-white shadow-lg shadow-blue-950/30' : 'text-slate-500 hover:text-slate-700'"
               @click="activeWorkflowTab = 'summary'"
             >
               AI 视频总结
@@ -905,7 +951,7 @@ const summaryTabs = [
             <button
               type="button"
               class="rounded-xl px-5 py-3 text-sm font-black transition"
-              :class="activeWorkflowTab === 'download' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-100'"
+              :class="activeWorkflowTab === 'download' ? 'bg-slate-200 text-slate-700' : 'text-slate-500 hover:text-slate-700'"
               @click="activeWorkflowTab = 'download'"
             >
               视频下载
@@ -917,10 +963,10 @@ const summaryTabs = [
           <article
             v-for="item in successfulResults"
             :key="`summary-${item.url}`"
-            class="rounded-3xl border border-[#2a303a] bg-[#171a20] p-5 shadow-xl shadow-black/10"
+            class="rounded-3xl border border-[#e2e8f0] bg-white p-5 shadow-xl shadow-slate-200/50"
           >
-            <div class="flex flex-col gap-4 border-b border-[#2a303a] pb-5 sm:flex-row sm:items-center">
-              <div class="h-24 w-full overflow-hidden rounded-2xl bg-[#11141a] sm:w-40">
+            <div class="flex flex-col gap-4 border-b border-[#e2e8f0] pb-5 sm:flex-row sm:items-center">
+              <div class="h-24 w-full overflow-hidden rounded-2xl bg-white sm:w-40">
                 <img
                   v-if="item.video?.thumbnail"
                   :src="item.video.thumbnail"
@@ -929,35 +975,35 @@ const summaryTabs = [
                   loading="lazy"
                   class="h-full w-full object-cover"
                 />
-                <div v-else class="grid h-full place-items-center text-sm font-bold text-slate-600">无封面</div>
+                <div v-else class="grid h-full place-items-center text-sm font-bold text-slate-400">无封面</div>
               </div>
               <div class="min-w-0 flex-1">
                 <div class="mb-2 flex flex-wrap gap-2 text-xs font-bold">
-                  <span class="rounded-full border border-blue-400/30 bg-blue-400/10 px-2.5 py-1 text-blue-200">{{ item.video?.extractor || "公开视频" }}</span>
-                  <span class="rounded-full border border-slate-500/40 bg-slate-700/40 px-2.5 py-1 text-slate-300">{{ formatDuration(item.video?.duration) }}</span>
+                  <span class="rounded-full border border-blue-400/30 bg-blue-400/10 px-2.5 py-1 text-blue-700">{{ item.video?.extractor || "公开视频" }}</span>
+                  <span class="rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-slate-600">{{ formatDuration(item.video?.duration) }}</span>
                 </div>
-                <h3 class="text-xl font-black leading-8 text-white">{{ item.video?.title }}</h3>
+                <h3 class="text-xl font-black leading-8 text-slate-800">{{ item.video?.title }}</h3>
               </div>
             </div>
 
             <div class="space-y-5 pt-5">
               <!-- 全局进度条 -->
-              <div v-if="isSummaryLoading(item.url)" class="rounded-2xl border border-[#2a303a] bg-[#1d2129] p-4">
+              <div v-if="isSummaryLoading(item.url)" class="rounded-2xl border border-[#e2e8f0] bg-[#f8fafc] p-4">
                 <div class="mb-3 flex items-center justify-between text-xs">
-                  <span class="font-bold text-slate-300">
+                  <span class="font-bold text-slate-600">
                     {{ (summaryForUrl(item.url)?.progress || 0) < 45 ? '阶段 1/2：字幕提取中...' : '阶段 2/2：AI 内容解析中...' }}
                   </span>
-                  <span class="text-slate-500">{{ Math.round(summaryForUrl(item.url)?.progress || 0) }}%</span>
+                  <span class="text-slate-400">{{ Math.round(summaryForUrl(item.url)?.progress || 0) }}%</span>
                 </div>
-                <div class="h-2 overflow-hidden rounded-full bg-[#11141a]">
+                <div class="h-2 overflow-hidden rounded-full bg-white">
                   <div class="h-full rounded-full bg-gradient-to-r from-blue-500 to-emerald-400 transition-all duration-500" :style="{ width: `${Math.max(4, summaryForUrl(item.url)?.progress || 0)}%` }"></div>
                 </div>
               </div>
 
               <!-- Block 2：AI 配置说明 -->
-              <section class="rounded-2xl border border-[#2a303a] bg-[#1d2129] p-4 shadow-sm">
-                <h4 class="text-sm font-black text-slate-200">AI 分析说明</h4>
-                <ul class="mt-3 space-y-2 text-xs leading-6 text-slate-400">
+              <section class="rounded-2xl border border-[#e2e8f0] bg-[#f8fafc] p-4 shadow-sm">
+                <h4 class="text-sm font-black text-slate-700">AI 分析说明</h4>
+                <ul class="mt-3 space-y-2 text-xs leading-6 text-slate-500">
                   <li class="flex items-start gap-2">
                     <span class="mt-0.5 shrink-0 text-emerald-400 font-black">1</span>
                     <span>优先自动提取平台内嵌字幕进行 AI 分析</span>
@@ -972,43 +1018,43 @@ const summaryTabs = [
               <!-- Block 3：核心操作区 -->
               <div class="space-y-3">
                 <div class="flex items-center gap-2">
-                  <span class="rounded-full bg-emerald-400/10 px-3 py-1 text-xs font-black text-emerald-200">核心操作</span>
+                  <span class="rounded-full bg-emerald-400/10 px-3 py-1 text-xs font-black text-emerald-700">核心操作</span>
                 </div>
                 <button
                   type="button"
                   :disabled="isSummaryLoading(item.url)"
-                  class="w-full rounded-2xl bg-emerald-500 px-5 py-4 text-base font-black text-white shadow-lg shadow-emerald-950/30 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50 disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none"
+                  class="w-full rounded-2xl bg-emerald-500 px-5 py-4 text-base font-black text-white shadow-lg shadow-emerald-950/30 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50 disabled:bg-slate-200 disabled:text-slate-500 disabled:shadow-none"
                   @click="createSummary(item)"
                 >
                   {{ isSummaryLoading(item.url) ? '分析中...' : '生成 AI 总结' }}
                 </button>
-                <p v-if="summaryErrors[item.url] || summaryForUrl(item.url)?.error" class="rounded-2xl border border-red-400/20 bg-red-500/10 p-3 text-sm leading-6 text-red-200">
+                <p v-if="summaryErrors[item.url] || summaryForUrl(item.url)?.error" class="rounded-2xl border border-red-400/20 bg-red-500/10 p-3 text-sm leading-6 text-red-600">
                   {{ summaryErrors[item.url] || summaryForUrl(item.url)?.error }}
                 </p>
               </div>
 
               <!-- Block 4：结果展示面板 -->
-              <section v-if="summaryForUrl(item.url)" class="rounded-2xl border border-[#2a303a] bg-[#1d2129] p-4 shadow-lg shadow-black/10">
+              <section v-if="summaryForUrl(item.url)" class="rounded-2xl border border-[#e2e8f0] bg-[#f8fafc] p-4 shadow-lg shadow-slate-200/50">
                 <!-- 元数据信息栏 -->
-                <div v-if="summaryForUrl(item.url)?.result" class="mb-4 flex flex-wrap gap-2 text-xs font-bold">
-                  <span class="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 text-emerald-200">
-                    📝 字幕 {{ (summaryForUrl(item.url)?.result?.transcript || []).length }} 段
+                <div v-if="summaryForUrl(item.url)?.result || earlyTranscripts[summaryIdForUrl(item.url)]?.length" class="mb-4 flex flex-wrap gap-2 text-xs font-bold">
+                  <span class="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 text-emerald-700">
+                    📝 字幕 {{ (transcriptForUrl(item.url) || []).length }} 段
                   </span>
-                  <span class="rounded-full border border-blue-400/30 bg-blue-400/10 px-2.5 py-1 text-blue-200">
+                  <span class="rounded-full border border-blue-400/30 bg-blue-400/10 px-2.5 py-1 text-blue-700">
                     📂 {{ (summaryForUrl(item.url)?.result?.chapters || []).length }} 章节
                   </span>
-                  <span class="rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-amber-200">
+                  <span class="rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-amber-700">
                     💡 {{ (summaryForUrl(item.url)?.result?.key_points || []).length }} 要点
                   </span>
-                  <span v-if="summaryForUrl(item.url)?.result?.markdown" class="rounded-full border border-purple-400/30 bg-purple-400/10 px-2.5 py-1 text-purple-200">
+                  <span v-if="summaryForUrl(item.url)?.result?.markdown" class="rounded-full border border-purple-400/30 bg-purple-400/10 px-2.5 py-1 text-purple-700">
                     📄 笔记 {{ summaryForUrl(item.url)?.result?.markdown.length }} 字
                   </span>
-                  <span v-if="summaryForUrl(item.url)?.result?.mindmap_markdown" class="rounded-full border border-pink-400/30 bg-pink-400/10 px-2.5 py-1 text-pink-200">
+                  <span v-if="summaryForUrl(item.url)?.result?.mindmap_markdown" class="rounded-full border border-pink-400/30 bg-pink-400/10 px-2.5 py-1 text-pink-700">
                     🧠 导图已生成
                   </span>
                 </div>
                 <!-- Tab 切换栏 -->
-                <div class="mb-5 flex gap-1 border-b border-[#2a303a] pb-0">
+                <div class="mb-5 flex gap-1 border-b border-[#e2e8f0] pb-0">
                   <button
                     v-for="tab in summaryTabs"
                     :key="tab.key"
@@ -1016,7 +1062,7 @@ const summaryTabs = [
                     class="relative px-4 py-3 text-sm font-bold transition"
                     :class="activeTabForUrl(item.url) === tab.key
                       ? 'text-white'
-                      : summaryForUrl(item.url)?.result ? 'text-slate-400 hover:text-slate-200' : 'text-slate-600 cursor-not-allowed'"
+                      : 'text-slate-500 hover:text-slate-600'"
                     @click="handleTabClick(item.url, tab.key)"
                   >
                     {{ tab.label }}
@@ -1031,54 +1077,57 @@ const summaryTabs = [
                 <div v-if="activeTabForUrl(item.url) === 'summary'">
                   <template v-if="summaryForUrl(item.url)?.result">
                     <div class="prose prose-theme prose-sm max-w-none" v-html="renderMarkdown(summaryForUrl(item.url)?.result?.markdown || '')"></div>
-                    <div class="mt-4 flex gap-2 border-t border-[#2a303a] pt-4">
-                      <button type="button" class="rounded-full border border-[#2a303a] px-3 py-2 text-xs font-black text-slate-200 hover:border-blue-400 hover:text-blue-200" @click="copyMarkdownForUrl(item.url)">复制</button>
+                    <div class="mt-4 flex gap-2 border-t border-[#e2e8f0] pt-4">
+                      <button type="button" class="rounded-full border border-[#e2e8f0] px-3 py-2 text-xs font-black text-slate-700 hover:border-blue-400 hover:text-blue-700" @click="copyMarkdownForUrl(item.url)">复制</button>
                       <button type="button" class="rounded-full bg-blue-500 px-3 py-2 text-xs font-black text-white hover:bg-blue-400" @click="downloadMarkdownForUrl(item.url)">导出 Markdown</button>
                     </div>
                   </template>
-                  <div v-else-if="streamingText[summaryIdForUrl(item.url)]" class="max-h-96 overflow-auto rounded-2xl bg-[#11141a] p-3 text-sm leading-6 text-slate-300 font-mono whitespace-pre-wrap">
+                  <div v-else-if="streamingText[summaryIdForUrl(item.url)]" class="max-h-96 overflow-auto rounded-2xl bg-slate-50 p-3 text-sm leading-6 text-slate-600 font-mono whitespace-pre-wrap">
                     {{ streamingText[summaryIdForUrl(item.url)] }}<span class="inline-block w-2 h-4 bg-blue-400 animate-pulse ml-0.5 align-middle"></span>
                   </div>
                 </div>
 
                 <!-- 字幕文本 -->
                 <div v-else-if="activeTabForUrl(item.url) === 'transcript'">
-                  <div class="max-h-96 overflow-auto rounded-2xl bg-[#11141a] p-3">
+                  <div class="max-h-96 overflow-auto rounded-2xl bg-slate-50 p-3">
                     <div
-                      v-for="segment in summaryForUrl(item.url)?.result?.transcript || []"
+                      v-for="segment in transcriptForUrl(item.url) || []"
                       :key="`${segment.start}-${segment.text}`"
-                      class="grid gap-2 border-b border-[#2a303a] py-2 text-sm last:border-b-0 sm:grid-cols-[76px_1fr]"
+                      class="grid gap-2 border-b border-[#e2e8f0] py-2 text-sm last:border-b-0 sm:grid-cols-[76px_1fr]"
                     >
-                      <span class="font-mono text-xs font-bold text-blue-300">{{ formatTimestamp(segment.start) }}</span>
-                      <span class="leading-6 text-slate-300">{{ segment.text }}</span>
+                      <span class="font-mono text-xs font-bold text-blue-600">{{ formatTimestamp(segment.start) }}</span>
+                      <span class="leading-6 text-slate-600">{{ segment.text }}</span>
                     </div>
-                    <p v-if="!summaryForUrl(item.url)?.result?.transcript?.length" class="py-8 text-center text-sm text-slate-500">暂无字幕数据</p>
+                    <p v-if="!transcriptForUrl(item.url)?.length" class="py-8 text-center text-sm text-slate-400">暂无字幕数据</p>
                   </div>
-                  <div v-if="summaryForUrl(item.url)?.result?.transcript?.length" class="mt-4 flex gap-2 border-t border-[#2a303a] pt-4">
-                    <button type="button" class="rounded-full border border-[#2a303a] px-3 py-2 text-xs font-black text-slate-200 hover:border-blue-400 hover:text-blue-200" @click="copyTranscriptForUrl(item.url)">复制</button>
-                    <button type="button" class="rounded-full border border-[#2a303a] px-3 py-2 text-xs font-black text-slate-200 hover:border-blue-400 hover:text-blue-200" @click="downloadTranscriptTxt(item.url)">导出 TXT</button>
+                  <div v-if="transcriptForUrl(item.url)?.length" class="mt-4 flex gap-2 border-t border-[#e2e8f0] pt-4">
+                    <button type="button" class="rounded-full border border-[#e2e8f0] px-3 py-2 text-xs font-black text-slate-700 hover:border-blue-400 hover:text-blue-700" @click="copyTranscriptForUrl(item.url)">复制</button>
+                    <button type="button" class="rounded-full border border-[#e2e8f0] px-3 py-2 text-xs font-black text-slate-700 hover:border-blue-400 hover:text-blue-700" @click="downloadTranscriptTxt(item.url)">导出 TXT</button>
                     <button type="button" class="rounded-full bg-blue-500 px-3 py-2 text-xs font-black text-white hover:bg-blue-400" @click="downloadTranscriptSrt(item.url)">导出 SRT</button>
                   </div>
                 </div>
 
                 <!-- 思维导图 -->
                 <div v-else-if="activeTabForUrl(item.url) === 'mindmap'">
-                  <div v-if="mindmapMarkdowns[summaryIdForUrl(item.url)] || summaryForUrl(item.url)?.result?.mindmap_markdown" class="rounded-2xl bg-[#11141a] overflow-hidden" :class="mindmapFullscreen[summaryIdForUrl(item.url)] ? 'fixed inset-0 z-50 rounded-none' : ''">
-                    <!-- 工具栏 -->
-                    <div class="flex items-center justify-end gap-2 px-3 py-2 border-b border-[#2a303a]">
-                      <button type="button" class="rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-300 hover:text-white hover:bg-white/10 transition" @click="toggleMindmapFullscreen(summaryIdForUrl(item.url))">
-                        {{ mindmapFullscreen[summaryIdForUrl(item.url)] ? '退出全屏' : '全屏' }}
-                      </button>
-                      <button type="button" class="rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-300 hover:text-white hover:bg-white/10 transition" @click="downloadMindmapPng(summaryIdForUrl(item.url))">下载 PNG</button>
-                      <button type="button" class="rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-300 hover:text-white hover:bg-white/10 transition" @click="downloadMindmapSvg(summaryIdForUrl(item.url))">下载 SVG</button>
+                  <template v-if="mindmapMarkdowns[summaryIdForUrl(item.url)] || summaryForUrl(item.url)?.result?.mindmap_markdown">
+                    <div class="rounded-2xl bg-slate-50 overflow-hidden" :class="mindmapFullscreen[summaryIdForUrl(item.url)] ? 'fixed inset-0 z-50 rounded-none flex flex-col' : ''">
+                      <!-- 工具栏：始终可交互 -->
+                      <div class="flex items-center justify-end gap-2 px-3 py-2 border-b border-[#e2e8f0] shrink-0">
+                        <span v-if="mindmapRendering[summaryIdForUrl(item.url)]" class="mr-auto text-xs text-slate-400">渲染中...</span>
+                        <button type="button" class="rounded-lg border border-[#e2e8f0] px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:text-slate-800 hover:bg-slate-100 transition" @click="toggleMindmapFullscreen(summaryIdForUrl(item.url))">
+                          {{ mindmapFullscreen[summaryIdForUrl(item.url)] ? '退出全屏' : '全屏' }}
+                        </button>
+                        <button type="button" class="rounded-lg border border-[#e2e8f0] px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:text-slate-800 hover:bg-slate-100 transition" @click="downloadMindmapPng(summaryIdForUrl(item.url))">下载 PNG</button>
+                        <button type="button" class="rounded-lg border border-[#e2e8f0] px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:text-slate-800 hover:bg-slate-100 transition" @click="downloadMindmapSvg(summaryIdForUrl(item.url))">下载 SVG</button>
+                      </div>
+                      <svg
+                        :ref="(el: any) => setMarkmapRef(summaryIdForUrl(item.url), el)"
+                        class="w-full flex-1"
+                        :style="mindmapFullscreen[summaryIdForUrl(item.url)] ? '' : 'min-height: 460px;'"
+                      ></svg>
                     </div>
-                    <svg
-                      :ref="(el: any) => setMarkmapRef(summaryIdForUrl(item.url), el)"
-                      class="w-full"
-                      :style="mindmapFullscreen[summaryIdForUrl(item.url)] ? 'height: calc(100vh - 41px);' : 'min-height: 460px;'"
-                    ></svg>
-                  </div>
-                  <div v-else-if="summaryForUrl(item.url)?.result?.mindmap" class="rounded-2xl bg-[#11141a] p-3">
+                  </template>
+                  <div v-else-if="summaryForUrl(item.url)?.result?.mindmap" class="rounded-2xl bg-white p-3">
                     <div
                       v-for="node in flattenedMindmap(summaryForUrl(item.url)?.result?.mindmap)"
                       :key="`${node.depth}-${node.name}`"
@@ -1086,10 +1135,16 @@ const summaryTabs = [
                       :style="{ paddingLeft: `${node.depth * 18}px` }"
                     >
                       <span class="mt-2 h-2 w-2 shrink-0 rounded-full" :class="node.depth === 0 ? 'bg-blue-400' : 'bg-emerald-400'" />
-                      <span class="rounded-xl border border-[#2a303a] bg-[#1d2129] px-3 py-2 font-semibold text-slate-200">{{ node.name }}</span>
+                      <span class="rounded-xl border border-[#e2e8f0] bg-[#f8fafc] px-3 py-2 font-semibold text-slate-700">{{ node.name }}</span>
                     </div>
                   </div>
-                  <p v-else class="py-8 text-center text-sm text-slate-500">暂无思维导图数据</p>
+                  <div v-else-if="isSummaryLoading(item.url)" class="flex items-center justify-center py-16">
+                    <div class="flex flex-col items-center gap-3">
+                      <div class="h-7 w-7 animate-spin rounded-full border-[3px] border-slate-600 border-t-blue-400"></div>
+                      <span class="text-xs text-slate-400">正在生成思维导图...</span>
+                    </div>
+                  </div>
+                  <p v-else class="py-8 text-center text-sm text-slate-400">暂无思维导图数据</p>
                 </div>
 
                 <!-- AI 问答 -->
@@ -1101,10 +1156,16 @@ const summaryTabs = [
                     :class="{ 'flex items-center justify-center': !(questionAnswers[summaryIdForUrl(item.url)] || []).length && !streamingQA[summaryIdForUrl(item.url)] }"
                     style="max-height: 420px;"
                   >
-                    <!-- 空状态引导 -->
-                    <div v-if="!(questionAnswers[summaryIdForUrl(item.url)] || []).length && !streamingQA[summaryIdForUrl(item.url)]" class="text-center">
+                    <!-- 加载中 / 空状态引导 -->
+                    <div v-if="isSummaryLoading(item.url)" class="flex items-center justify-center py-16">
+                      <div class="flex flex-col items-center gap-3">
+                        <div class="h-7 w-7 animate-spin rounded-full border-[3px] border-slate-600 border-t-blue-400"></div>
+                        <span class="text-xs text-slate-400">AI 分析完成后即可提问...</span>
+                      </div>
+                    </div>
+                    <div v-else-if="!(questionAnswers[summaryIdForUrl(item.url)] || []).length && !streamingQA[summaryIdForUrl(item.url)]" class="text-center">
                       <div class="mb-2 text-3xl opacity-30">💬</div>
-                      <p class="text-sm text-slate-500">输入问题，基于视频内容获取答案</p>
+                      <p class="text-sm text-slate-400">输入问题，基于视频内容获取答案</p>
                     </div>
 
                     <div v-else class="space-y-6 py-2">
@@ -1123,25 +1184,25 @@ const summaryTabs = [
                           class="flex flex-col gap-2 group/bubble"
                         >
                           <div class="flex justify-start">
-                            <div class="max-w-[82%] rounded-2xl rounded-bl-md bg-[#1a1d24] border border-[#2a303a]/80 px-5 py-3.5 text-sm leading-7 text-slate-200 shadow-sm hover:shadow-md hover:border-[#3a4450] transition-all duration-200">
+                            <div class="max-w-[82%] rounded-2xl rounded-bl-md bg-[#f1f5f9] border border-[#e2e8f0]/80 px-5 py-3.5 text-sm leading-7 text-slate-700 shadow-sm hover:shadow-md hover:border-slate-300 transition-all duration-200">
                               <div class="prose prose-theme prose-sm max-w-none" v-html="renderMarkdown(qa.answer)"></div>
                               <!-- 操作按钮 -->
                               <div class="mt-3 flex items-center gap-1.5 justify-end opacity-70 group-hover/bubble:opacity-100 transition-opacity">
                                 <button
                                   type="button"
-                                  class="rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:text-white hover:bg-white/10 active:bg-white/15 transition"
+                                  class="rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-700 hover:bg-slate-200 active:bg-slate-300 transition"
                                   @click="copyAnswerText(qa.answer)"
                                 >复制</button>
                                 <button
                                   type="button"
-                                  class="rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:text-white hover:bg-white/10 active:bg-white/15 transition"
+                                  class="rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-700 hover:bg-slate-200 active:bg-slate-300 transition"
                                   @click="regenerateAnswer(item.url, qa.question)"
                                 >重新生成</button>
                                 <button
                                   v-if="qa.references.length"
                                   type="button"
                                   class="rounded-lg px-2.5 py-1.5 text-xs font-medium transition"
-                                  :class="expandedRefs[`${summaryIdForUrl(item.url)}_${qaIdx}`] ? 'text-blue-400 bg-blue-400/15' : 'text-slate-300 hover:text-white hover:bg-white/10'"
+                                  :class="expandedRefs[`${summaryIdForUrl(item.url)}_${qaIdx}`] ? 'text-blue-400 bg-blue-400/15' : 'text-slate-600 hover:text-slate-700 hover:bg-slate-200'"
                                   @click="expandedRefs[`${summaryIdForUrl(item.url)}_${qaIdx}`] = !expandedRefs[`${summaryIdForUrl(item.url)}_${qaIdx}`]"
                                 >
                                   参考 {{ qa.references.length }}
@@ -1152,17 +1213,17 @@ const summaryTabs = [
                           <!-- 参考素材折叠面板 -->
                           <div
                             v-if="expandedRefs[`${summaryIdForUrl(item.url)}_${qaIdx}`] && qa.references.length"
-                            class="ml-1 rounded-2xl border border-[#2a303a]/60 bg-[#13161c] px-4 py-3 shadow-inner"
+                            class="ml-1 rounded-2xl border border-[#e2e8f0]/60 bg-[#f1f5f9] px-4 py-3 shadow-inner"
                           >
-                            <p class="text-xs font-bold text-slate-500 mb-2.5 uppercase tracking-wide">参考素材</p>
+                            <p class="text-xs font-bold text-slate-400 mb-2.5 uppercase tracking-wide">参考素材</p>
                             <div class="space-y-2 max-h-32 overflow-y-auto custom-scroll">
                               <p
                                 v-for="ref in qa.references"
                                 :key="`${ref.start}-${ref.text}`"
-                                class="text-xs leading-5 text-slate-400"
+                                class="text-xs leading-5 text-slate-500"
                               >
                                 <span class="inline-block font-mono font-bold text-blue-400 min-w-[40px]">{{ formatTimestamp(ref.start) }}</span>
-                                <span class="text-slate-500">·</span>
+                                <span class="text-slate-400">·</span>
                                 <span>{{ ref.text }}</span>
                               </p>
                             </div>
@@ -1172,7 +1233,7 @@ const summaryTabs = [
 
                       <!-- 流式生成中的 AI 气泡 -->
                       <div v-if="streamingQA[summaryIdForUrl(item.url)]" class="flex justify-start">
-                        <div class="max-w-[82%] rounded-2xl rounded-bl-md bg-[#1a1d24] border border-blue-400/40 px-5 py-3.5 text-sm leading-7 text-slate-200 shadow-md shadow-blue-400/5">
+                        <div class="max-w-[82%] rounded-2xl rounded-bl-md bg-[#f1f5f9] border border-blue-400/40 px-5 py-3.5 text-sm leading-7 text-slate-700 shadow-md shadow-blue-400/5">
                           <p class="whitespace-pre-wrap break-words">
                             {{ streamingQA[summaryIdForUrl(item.url)] }}
                             <span class="typing-cursor"></span>
@@ -1183,18 +1244,18 @@ const summaryTabs = [
                   </div>
 
                   <!-- 底部固定输入栏 -->
-                  <div class="flex items-center gap-3 pt-3.5 mt-2 border-t border-[#2a303a]/80 px-1">
+                  <div class="flex items-center gap-3 pt-3.5 mt-2 border-t border-[#e2e8f0]/80 px-1">
                     <input
                       v-model="questionInputs[summaryIdForUrl(item.url)]"
                       type="text"
-                      class="min-w-0 flex-1 rounded-xl border border-[#2a303a] bg-[#11141a] px-4 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-blue-400/70 focus:ring-2 focus:ring-blue-500/10 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                      class="min-w-0 flex-1 rounded-xl border border-[#e2e8f0] bg-white px-4 py-3 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-blue-400/70 focus:ring-2 focus:ring-blue-500/10 transition disabled:opacity-40 disabled:cursor-not-allowed"
                       placeholder="针对这个视频提问..."
                       :disabled="!summaryForUrl(item.url)?.result"
                       @keyup.enter="askSummaryForUrl(item.url)"
                     />
                     <button
                       type="button"
-                      class="shrink-0 rounded-xl bg-blue-500 px-7 py-3 text-sm font-bold text-white hover:bg-blue-400 active:bg-blue-600 disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed transition shadow-sm shadow-blue-500/20"
+                      class="shrink-0 rounded-xl bg-blue-500 px-7 py-3 text-sm font-bold text-white hover:bg-blue-400 active:bg-blue-600 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed transition shadow-sm shadow-blue-500/20"
                       :disabled="questionLoading[summaryIdForUrl(item.url)] || !summaryForUrl(item.url)?.result"
                       @click="askSummaryForUrl(item.url)"
                     >
@@ -1211,10 +1272,10 @@ const summaryTabs = [
           <article
             v-for="item in successfulResults"
             :key="`download-${item.url}`"
-            class="rounded-3xl border border-[#2a303a] bg-[#171a20] p-5 shadow-xl shadow-black/10"
+            class="rounded-3xl border border-[#e2e8f0] bg-white p-5 shadow-xl shadow-slate-200/50"
           >
-            <div class="flex flex-col gap-4 border-b border-[#2a303a] pb-5 sm:flex-row sm:items-center">
-              <div class="h-20 w-full overflow-hidden rounded-2xl bg-[#11141a] sm:w-32">
+            <div class="flex flex-col gap-4 border-b border-[#e2e8f0] pb-5 sm:flex-row sm:items-center">
+              <div class="h-20 w-full overflow-hidden rounded-2xl bg-white sm:w-32">
                 <img
                   v-if="item.video?.thumbnail"
                   :src="item.video.thumbnail"
@@ -1223,23 +1284,23 @@ const summaryTabs = [
                   loading="lazy"
                   class="h-full w-full object-cover"
                 />
-                <div v-else class="grid h-full place-items-center text-xs font-bold text-slate-600">无封面</div>
+                <div v-else class="grid h-full place-items-center text-xs font-bold text-slate-400">无封面</div>
               </div>
               <div class="min-w-0">
                 <div class="mb-2 flex flex-wrap gap-2 text-xs font-bold">
-                  <span class="rounded-full border border-blue-400/30 bg-blue-400/10 px-2.5 py-1 text-blue-200">{{ item.video?.extractor || "公开视频" }}</span>
-                  <span class="rounded-full border border-slate-500/40 bg-slate-700/40 px-2.5 py-1 text-slate-300">{{ formatDuration(item.video?.duration) }}</span>
+                  <span class="rounded-full border border-blue-400/30 bg-blue-400/10 px-2.5 py-1 text-blue-700">{{ item.video?.extractor || "公开视频" }}</span>
+                  <span class="rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-slate-600">{{ formatDuration(item.video?.duration) }}</span>
                 </div>
-                <h3 class="line-clamp-2 text-lg font-black leading-7 text-white">{{ item.video?.title }}</h3>
+                <h3 class="line-clamp-2 text-lg font-black leading-7 text-slate-800">{{ item.video?.title }}</h3>
               </div>
             </div>
 
             <div class="space-y-5 pt-5">
-              <label class="block text-sm font-bold text-slate-300">
+              <label class="block text-sm font-bold text-slate-700">
                 下载格式
                 <select
                   v-model="selectedFormats[item.url]"
-                  class="mt-2 w-full rounded-2xl border border-[#2a303a] bg-[#11141a] px-3 py-3 text-sm text-white outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10"
+                  class="mt-2 w-full rounded-2xl border border-[#e2e8f0] bg-white px-3 py-3 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10"
                 >
                   <option v-for="format in item.video?.formats" :key="format.format_id" :value="format.format_id">
                     {{ displayFormatLabel(format) }}
@@ -1250,61 +1311,61 @@ const summaryTabs = [
                 <div class="group relative">
                   <button
                     type="button"
-                    class="w-full rounded-full border border-blue-400/40 px-4 py-3 text-sm font-black text-blue-200 hover:bg-blue-400/10"
+                    class="w-full rounded-full border border-blue-400/40 px-4 py-3 text-sm font-black text-blue-700 hover:bg-blue-400/10"
                     @click="directDownload(item)"
                   >
                     直链下载
                   </button>
-                  <div class="pointer-events-none absolute bottom-full left-0 z-10 mb-2 hidden w-72 rounded-2xl border border-[#2a303a] bg-[#11141a] p-3 text-xs leading-5 text-slate-300 shadow-xl group-hover:block">
+                  <div class="pointer-events-none absolute bottom-full left-0 z-10 mb-2 hidden w-72 rounded-2xl border border-[#e2e8f0] bg-white p-3 text-xs leading-5 text-slate-600 shadow-xl group-hover:block">
                     优先跳转平台直链，速度快，不占用服务器存储。适合直链未过期的视频。
                   </div>
                 </div>
                 <div class="group relative">
                   <button
                     type="button"
-                    class="w-full rounded-full bg-slate-700 px-4 py-3 text-sm font-black text-white hover:bg-slate-600"
+                    class="w-full rounded-full bg-slate-100 px-4 py-3 text-sm font-black text-slate-700 hover:bg-slate-200 border border-[#e2e8f0]"
                     @click="createJob(item)"
                   >
                     服务端下载
                   </button>
-                  <div class="pointer-events-none absolute bottom-full left-0 z-10 mb-2 hidden w-72 rounded-2xl border border-[#2a303a] bg-[#11141a] p-3 text-xs leading-5 text-slate-300 shadow-xl group-hover:block">
+                  <div class="pointer-events-none absolute bottom-full left-0 z-10 mb-2 hidden w-72 rounded-2xl border border-[#e2e8f0] bg-white p-3 text-xs leading-5 text-slate-600 shadow-xl group-hover:block">
                     由服务器代为下载后再提供文件，适合直链失效、防盗链或浏览器无法直接下载的情况。
                   </div>
                 </div>
               </div>
-              <p v-if="directErrors[item.url]" class="rounded-2xl border border-amber-300/20 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">
+              <p v-if="directErrors[item.url]" class="rounded-2xl border border-amber-300/20 bg-amber-300/10 p-3 text-xs leading-5 text-amber-700">
                 {{ directErrors[item.url] }}
               </p>
             </div>
           </article>
         </div>
 
-        <section v-if="activeWorkflowTab === 'download' && jobs.length" class="mt-6 rounded-3xl border border-[#2a303a] bg-[#171a20] p-5">
+        <section v-if="activeWorkflowTab === 'download' && jobs.length" class="mt-6 rounded-3xl border border-[#e2e8f0] bg-white p-5">
           <div class="mb-5">
-            <p class="text-sm font-bold text-blue-300">任务队列</p>
-            <h3 class="mt-1 text-xl font-black text-white">服务端下载进度</h3>
+            <p class="text-sm font-bold text-blue-600">任务队列</p>
+            <h3 class="mt-1 text-xl font-black text-slate-800">服务端下载进度</h3>
           </div>
           <div class="grid gap-4">
-            <article v-for="job in jobs" :key="job.job_id" class="rounded-2xl border border-[#2a303a] bg-[#1d2129] p-4">
+            <article v-for="job in jobs" :key="job.job_id" class="rounded-2xl border border-[#e2e8f0] bg-[#f8fafc] p-4">
               <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div class="min-w-0">
-                  <p class="truncate text-sm font-bold text-white">{{ job.url }}</p>
-                  <p class="mt-1 text-xs text-slate-400">格式：{{ job.format_id }} · 速度：{{ formatSpeed(job.speed) }}</p>
+                  <p class="truncate text-sm font-bold text-slate-700">{{ job.url }}</p>
+                  <p class="mt-1 text-xs text-slate-500">格式：{{ job.format_id }} · 速度：{{ formatSpeed(job.speed) }}</p>
                 </div>
                 <span class="w-fit rounded-full px-3 py-1 text-xs font-black" :class="{
-                  'bg-blue-400/10 text-blue-200': job.status === 'queued' || job.status === 'running',
-                  'bg-emerald-400/10 text-emerald-200': job.status === 'success',
-                  'bg-red-400/10 text-red-200': job.status === 'failed'
+                  'bg-blue-400/10 text-blue-700': job.status === 'queued' || job.status === 'running',
+                  'bg-emerald-400/10 text-emerald-700': job.status === 'success',
+                  'bg-red-400/10 text-red-600': job.status === 'failed'
                 }">
                   {{ job.status }}
                 </span>
               </div>
-              <div class="mt-4 h-3 overflow-hidden rounded-full bg-[#11141a]">
+              <div class="mt-4 h-3 overflow-hidden rounded-full bg-white">
                 <div class="h-full rounded-full bg-blue-500 transition-all" :style="{ width: `${Math.max(2, job.progress || 0)}%` }" />
               </div>
-              <div class="mt-3 flex flex-col gap-2 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+              <div class="mt-3 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
                 <span>{{ Math.round(job.progress || 0) }}% · {{ formatBytes(job.downloaded_bytes) }} / {{ formatBytes(job.total_bytes) }}</span>
-                <span v-if="job.error" class="text-red-300">{{ job.error }}</span>
+                <span v-if="job.error" class="text-red-500">{{ job.error }}</span>
               </div>
               <div v-if="job.files.length" class="mt-4 flex flex-wrap gap-2">
                 <button
@@ -1322,24 +1383,24 @@ const summaryTabs = [
         </section>
 
         <div v-if="failedResults.length" class="mt-6 rounded-3xl border border-red-400/20 bg-red-500/10 p-5">
-          <h3 class="font-black text-red-200">解析失败的链接</h3>
-          <ul class="mt-3 space-y-2 text-sm text-red-100">
+          <h3 class="font-black text-red-600">解析失败的链接</h3>
+          <ul class="mt-3 space-y-2 text-sm text-red-600">
             <li v-for="item in failedResults" :key="item.url">{{ item.url }}：{{ item.error }}</li>
           </ul>
         </div>
       </section>
 
-      <section id="platforms" class="border-y border-[#2a303a] bg-[#11141a]">
+      <section id="platforms" class="border-y border-[#e2e8f0] bg-white">
         <div class="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
           <div class="mb-6 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <p class="text-sm font-bold text-blue-300">平台展示</p>
-              <h2 class="mt-1 text-2xl font-black text-white sm:text-3xl">常见公开视频平台</h2>
+              <p class="text-sm font-bold text-blue-600">平台展示</p>
+              <h2 class="mt-1 text-2xl font-black text-slate-800 sm:text-3xl">常见公开视频平台</h2>
             </div>
-            <p class="max-w-xl text-sm leading-6 text-slate-400">实际可用性以 yt-dlp 当前支持情况和平台公开访问策略为准。</p>
+            <p class="max-w-xl text-sm leading-6 text-slate-500">实际可用性以 yt-dlp 当前支持情况和平台公开访问策略为准。</p>
           </div>
           <div class="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
-            <div v-for="platform in platforms" :key="platform" class="rounded-2xl border border-[#2a303a] bg-[#171a20] px-4 py-5 text-center text-sm font-black text-slate-200">
+            <div v-for="platform in platforms" :key="platform" class="rounded-2xl border border-[#e2e8f0] bg-white px-4 py-5 text-center text-sm font-black text-slate-700">
               {{ platform }}
             </div>
           </div>
@@ -1347,8 +1408,8 @@ const summaryTabs = [
       </section>
 
       <section id="notice" class="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
-        <div class="rounded-3xl border border-amber-300/20 bg-amber-300/10 p-6 text-sm leading-7 text-amber-100">
-          <strong class="text-amber-200">风险提示：</strong>
+        <div class="rounded-3xl border border-amber-300/20 bg-amber-300/10 p-6 text-sm leading-7 text-amber-700">
+          <strong class="text-amber-800">风险提示：</strong>
           请仅下载和分析你有权使用的公开视频内容，尊重版权和平台规则。本项目不提供 DRM 绕过、验证码绕过、账号 cookies 上传或反风控能力。
         </div>
       </section>
@@ -1390,14 +1451,14 @@ const summaryTabs = [
   background: transparent;
 }
 .custom-scroll::-webkit-scrollbar-thumb {
-  background: #3a4450;
+  background: #cbd5e1;
   border-radius: 4px;
 }
 .custom-scroll::-webkit-scrollbar-thumb:hover {
-  background: #4a5568;
+  background: #94a3b8;
 }
 .custom-scroll {
   scrollbar-width: thin;
-  scrollbar-color: #3a4450 transparent;
+  scrollbar-color: #cbd5e1 transparent;
 }
 </style>

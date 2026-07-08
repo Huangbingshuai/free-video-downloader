@@ -78,6 +78,9 @@ def _run_summary_job_stream(summary_id: str, url: str, language: str) -> None:
         summary_store.update(summary_id, status="running", progress=10)
         summary_store.send_event(summary_id, f"data: {json.dumps({'type': 'progress', 'progress': 10, 'message': '正在提取字幕...'})}\n\n")
         video, transcript = transcript_service.extract(url, language)
+        # 字幕已就绪，立即推送给前端，流式总结期间也能查看
+        transcript_data = [t.model_dump() for t in transcript]
+        summary_store.send_event(summary_id, f"data: {json.dumps({'type': 'transcript', 'segments': transcript_data, 'title': video.title})}\n\n")
         summary_store.update(summary_id, progress=30)
         summary_store.send_event(summary_id, f"data: {json.dumps({'type': 'progress', 'progress': 30, 'message': '字幕提取完成，开始 AI 深度分析...'})}\n\n")
 
