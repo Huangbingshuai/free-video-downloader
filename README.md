@@ -1,6 +1,6 @@
-# 万能视频下载助手
+# 影知
 
-基于 FastAPI、yt-dlp、Vue3、Vite 和 Tailwind CSS 的公开视频下载网站 MVP。当前已完成阶段 1 到阶段 3：后端核心 API、前端页面、解析到下载任务的联调闭环。
+基于 FastAPI、yt-dlp、Vue3、Vite 和 Tailwind CSS 的公开视频下载与 AI 总结网站 MVP。当前已完成阶段 1 到阶段 3：后端核心 API、前端页面、解析到下载任务的联调闭环。
 
 ## 功能范围
 

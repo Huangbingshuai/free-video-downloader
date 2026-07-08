@@ -1027,9 +1027,49 @@ const domesticPlatforms = ["抖音", "Bilibili", "爱奇艺", "腾讯视频", "�
 const overseasPlatforms = ["YouTube", "TikTok", "Vimeo", "Instagram", "X", "Facebook"];
 const heroPlatforms = ["YouTube", "Bilibili", "抖音", "TikTok", "小红书", "Vimeo"];
 const featureCards: IconCard[] = [
-  { title: "多平台解析", text: "直接粘贴公开视频链接，自动识别平台、封面和可用格式。", icon: Globe2, tone: "cyan" },
-  { title: "自动内容整理", text: "解析成功后自动生成摘要、字幕、思维导图和问答素材。", icon: Sparkles, tone: "rose" },
-  { title: "下载与导出", text: "视频下载、字幕导出、笔记复制集中在同一张任务卡内。", icon: FileText, tone: "amber" },
+  { title: "支持主流平台", text: "覆盖 YouTube、Bilibili、抖音、TikTok、小红书、Vimeo 等常见公开视频平台。", icon: Globe2, tone: "cyan" },
+  { title: "极速解析下载", text: "粘贴视频链接后自动识别可用格式，优先直链下载，复杂链接可切换云端处理。", icon: Zap, tone: "amber" },
+  { title: "手机也能用", text: "打开网页即可使用，无需安装桌面软件，适合临时保存课程、讲座和公开视频素材。", icon: Clipboard, tone: "cyan" },
+  { title: "多种清晰度", text: "按视频实际可用格式选择清晰度、文件类型和下载方式，满足学习、归档和复盘场景。", icon: Video, tone: "rose" },
+  { title: "视频总结整理", text: "解析后自动生成摘要、章节、字幕、思维导图和问答素材，看长视频更省时间。", icon: Bot, tone: "amber" },
+];
+const useSteps = [
+  {
+    title: "复制视频链接",
+    text: "在 YouTube、Bilibili、抖音等平台找到想保存或整理的公开视频，复制视频分享链接或地址栏 URL。",
+  },
+  {
+    title: "粘贴链接并解析",
+    text: "把链接粘贴到输入框中，点击下载视频，系统会自动识别视频信息、平台来源和可用格式。",
+  },
+  {
+    title: "选择清晰度并下载",
+    text: "从解析结果中选择需要的清晰度或格式，点击极速下载或云端处理，并可继续导出字幕、摘要和思维导图。",
+  },
+];
+const comparisonRows = [
+  { label: "支持平台范围", ours: "常见主流平台", online: "部分平台", desktop: "依赖软件版本" },
+  { label: "视频总结整理", ours: "支持", online: "较少支持", desktop: "通常不支持" },
+  { label: "思维导图生成", ours: "支持", online: "通常不支持", desktop: "通常不支持" },
+  { label: "字幕导出", ours: "TXT / SRT", online: "部分支持", desktop: "部分支持" },
+  { label: "抖音公开视频解析", ours: "支持公开链接", online: "部分支持", desktop: "常需额外配置" },
+  { label: "安装门槛", ours: "无需安装", online: "无需安装", desktop: "需要安装" },
+  { label: "移动端使用", ours: "浏览器可用", online: "部分可用", desktop: "通常不可用" },
+  { label: "适合场景", ours: "下载 + 学习整理", online: "临时下载", desktop: "批量下载" },
+];
+const faqItems = [
+  {
+    question: "影知和普通视频下载器有什么区别？",
+    answer: "它不仅提供公开视频解析、格式选择和下载任务，还会把可提取字幕整理成摘要、章节大纲、核心要点、术语解释、思维导图和可追问的问答素材。",
+  },
+  {
+    question: "适合用来整理哪些视频内容？",
+    answer: "适合整理你有权使用的公开课程、公开视频素材、讲座、教程、运营参考视频和内部学习资料，并把内容沉淀成摘要、字幕和笔记。",
+  },
+  {
+    question: "这个工具的安全和版权边界是什么？",
+    answer: "它仅面向授权内容分析、学习整理和内部资料归档，不支持私密内容、受保护内容、DRM 绕过、验证码绕过、登录态绕过、平台 Cookie 上传或账号池代管。",
+  },
 ];
 const summaryTabs = [
   { key: "summary", label: "总结摘要", icon: FileText },
@@ -1047,11 +1087,13 @@ const summaryTabs = [
           <span class="grid h-9 w-9 place-items-center rounded-lg bg-[#ff5a5f] text-white shadow-sm shadow-[#ff5a5f]/30">
             <Video class="h-5 w-5" />
           </span>
-          <span class="text-base font-black text-slate-800">视频下载器</span>
+          <span class="text-base font-black text-slate-800">影知</span>
         </a>
         <div class="hidden items-center gap-6 text-sm font-semibold text-slate-500 md:flex">
           <a href="#tool" class="hover:text-[#ff5a5f]">下载</a>
           <a href="#features" class="hover:text-[#ff5a5f]">功能</a>
+          <a href="#how-to-use" class="hover:text-[#ff5a5f]">用法</a>
+          <a href="#comparison" class="hover:text-[#ff5a5f]">对比</a>
           <button type="button" class="hover:text-[#ff5a5f]" @click="openInfoDrawer('platforms')">支持平台</button>
         </div>
         <button type="button" class="inline-flex items-center gap-2 rounded-full bg-[#ff5a5f] px-4 py-2 text-sm font-bold text-white shadow-sm shadow-[#ff5a5f]/30 hover:bg-[#ef4444]" @click="openInfoDrawer('download')">
@@ -1603,30 +1645,94 @@ const summaryTabs = [
         </div>
       </section>
 
-      <section id="features" class="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
+      <section id="features" class="mx-auto max-w-7xl px-4 py-14 sm:px-6 lg:px-8">
         <div class="text-center">
-          <p class="text-sm font-bold text-[#ff5a5f]">功能亮点</p>
-          <h2 class="mt-2 text-3xl font-black text-slate-900">下载视频，也整理内容</h2>
+          <h2 class="text-3xl font-black text-slate-900 sm:text-4xl">为什么选择影知视频下载器</h2>
+          <p class="mt-3 text-sm leading-7 text-slate-500">简单、快速、强大的在线视频下载体验，支持视频内容自动整理</p>
         </div>
-        <div class="mt-8 grid gap-4 md:grid-cols-3">
+        <div class="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <article
             v-for="card in featureCards"
             :key="card.title"
-            class="rounded-[28px] border border-[#f2ded3] bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:shadow-xl hover:shadow-[#f1c7b8]/50"
+            class="rounded-[18px] border border-[#e5e7eb] bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-[#dbeafe] hover:shadow-xl hover:shadow-slate-200/80"
           >
             <div
-              class="mb-5 grid h-14 w-14 place-items-center rounded-2xl"
+              class="mb-6 grid h-12 w-12 place-items-center rounded-xl"
               :class="{
                 'bg-cyan-100 text-cyan-700': card.tone === 'cyan',
                 'bg-rose-100 text-rose-700': card.tone === 'rose',
                 'bg-amber-100 text-amber-700': card.tone === 'amber'
               }"
             >
-              <component :is="card.icon" class="h-7 w-7" />
+              <component :is="card.icon" class="h-6 w-6" />
             </div>
-            <h3 class="text-lg font-black text-slate-900">{{ card.title }}</h3>
+            <h3 class="text-base font-black text-slate-900">{{ card.title }}</h3>
             <p class="mt-3 text-sm leading-7 text-slate-500">{{ card.text }}</p>
           </article>
+        </div>
+      </section>
+
+      <section id="how-to-use" class="border-y border-[#f2ded3] bg-white">
+        <div class="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
+          <div class="text-center">
+            <h2 class="text-3xl font-black text-slate-900 sm:text-4xl">如何使用影知下载视频</h2>
+            <p class="mt-3 text-sm leading-7 text-slate-500">只需 3 步，即可下载并整理 YouTube、Bilibili、抖音等公开视频</p>
+          </div>
+
+          <div class="mt-10 grid gap-8 lg:grid-cols-3">
+            <article v-for="(step, index) in useSteps" :key="step.title" class="relative text-center">
+              <div class="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-blue-50 text-xl font-black text-blue-600">
+                {{ index + 1 }}
+              </div>
+              <h3 class="mt-5 text-lg font-black text-slate-900">{{ step.title }}</h3>
+              <p class="mx-auto mt-3 max-w-sm text-sm leading-7 text-slate-500">{{ step.text }}</p>
+              <span v-if="index < useSteps.length - 1" class="absolute right-[-18px] top-6 hidden text-4xl font-light text-slate-200 lg:block">›</span>
+            </article>
+          </div>
+
+          <p class="mt-10 text-center text-sm text-slate-400">全程无需注册登录，手机浏览器也能操作。请仅下载或整理你有权使用的公开视频内容。</p>
+        </div>
+      </section>
+
+      <section id="comparison" class="bg-[#f8fafc]">
+        <div class="mx-auto max-w-6xl px-4 py-16 sm:px-6 lg:px-8">
+          <div class="text-center">
+            <h2 class="text-3xl font-black text-slate-900 sm:text-4xl">影知与其他视频下载工具对比</h2>
+            <p class="mt-3 text-sm leading-7 text-slate-500">一张表看清核心优势，选择更适合学习整理的视频工具</p>
+          </div>
+
+          <div class="mt-10 overflow-hidden rounded-3xl border border-[#e5e7eb] bg-white shadow-sm">
+            <div class="overflow-x-auto">
+              <table class="w-full min-w-[760px] text-left text-sm">
+                <thead class="bg-slate-50 text-slate-900">
+                  <tr>
+                    <th class="px-6 py-4 font-black">功能对比</th>
+                    <th class="px-6 py-4 text-center font-black text-blue-600">影知</th>
+                    <th class="px-6 py-4 text-center font-black">其他在线工具</th>
+                    <th class="px-6 py-4 text-center font-black">桌面下载软件</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100">
+                  <tr v-for="row in comparisonRows" :key="row.label" class="text-slate-600">
+                    <td class="px-6 py-4 font-bold text-slate-800">{{ row.label }}</td>
+                    <td class="px-6 py-4 text-center font-semibold text-emerald-600">{{ row.ours }}</td>
+                    <td class="px-6 py-4 text-center">{{ row.online }}</td>
+                    <td class="px-6 py-4 text-center">{{ row.desktop }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="mt-10">
+            <h2 class="text-2xl font-black text-slate-900">公开视频下载与视频总结常见问题</h2>
+            <div class="mt-5 grid gap-4 lg:grid-cols-3">
+              <article v-for="item in faqItems" :key="item.question" class="rounded-[20px] border border-[#e5e7eb] bg-white p-5 shadow-sm">
+                <h3 class="text-base font-black leading-7 text-slate-900">{{ item.question }}</h3>
+                <p class="mt-3 text-sm leading-7 text-slate-500">{{ item.answer }}</p>
+              </article>
+            </div>
+          </div>
         </div>
       </section>
     </main>

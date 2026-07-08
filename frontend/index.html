@@ -3,10 +3,181 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>万能视频下载助手</title>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <title>影知 - 免费视频下载器 | 公开视频下载与 AI 总结工具</title>
+    <meta
+      name="description"
+      content="影知支持粘贴 YouTube、Bilibili、抖音、TikTok 等公开视频链接，完成视频解析、格式选择、下载任务、字幕导出、AI 摘要、章节大纲、思维导图和视频问答。仅面向授权内容、学习整理和内部资料归档场景。"
+    />
+    <meta
+      name="keywords"
+      content="影知,免费视频下载器,视频下载总结器,AI视频总结,公开视频下载,字幕导出,视频问答,抖音下载,B站下载,YouTube下载,TikTok下载"
+    />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+    <meta name="format-detection" content="telephone=no,email=no,address=no" />
+    <meta name="theme-color" content="#ff5a5f" />
+    <link rel="canonical" href="%VITE_SITE_URL%/" />
+    <link rel="alternate" href="%VITE_SITE_URL%/" hreflang="zh-CN" />
+    <link rel="alternate" href="%VITE_SITE_URL%/" hreflang="x-default" />
+
+    <meta property="og:title" content="影知 - 免费视频下载器" />
+    <meta
+      property="og:description"
+      content="粘贴公开视频链接，即可解析视频信息、选择下载格式，并生成字幕、摘要、章节、思维导图和视频问答素材。"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="%VITE_SITE_URL%/" />
+    <meta property="og:image" content="%VITE_SITE_URL%/og-cover.svg" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="影知" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="影知 - 免费视频下载器" />
+    <meta
+      name="twitter:description"
+      content="公开视频下载、字幕导出、AI 摘要、章节大纲、思维导图和视频问答集中在一个工具里。"
+    />
+    <meta name="twitter:image" content="%VITE_SITE_URL%/og-cover.svg" />
+
+    <meta itemprop="name" content="影知" />
+    <meta
+      itemprop="description"
+      content="面向学习整理、内容归档和授权资料分析的公开视频下载与 AI 总结工具。"
+    />
+    <meta itemprop="image" content="%VITE_SITE_URL%/og-cover.svg" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebApplication",
+            "@id": "#webapp",
+            "name": "影知",
+            "url": "%VITE_SITE_URL%/",
+            "image": "%VITE_SITE_URL%/og-cover.svg",
+            "alternateName": ["影知视频下载器", "免费视频下载器", "视频下载助手", "AI 视频总结工具"],
+            "applicationCategory": "MultimediaApplication",
+            "operatingSystem": "Web",
+            "inLanguage": "zh-CN",
+            "isAccessibleForFree": true,
+            "description": "影知支持解析公开视频链接，提供格式选择、直链下载、服务端下载任务、字幕导出、AI 摘要、章节大纲、思维导图和视频问答。",
+            "featureList": [
+              "公开视频链接解析",
+              "批量 URL 去重识别",
+              "视频格式选择",
+              "直链下载与服务端下载兜底",
+              "字幕导出",
+              "AI 视频摘要",
+              "章节大纲",
+              "思维导图",
+              "视频内容问答"
+            ],
+            "audience": [
+              { "@type": "Audience", "audienceType": "学生和学习者" },
+              { "@type": "Audience", "audienceType": "内容运营者" },
+              { "@type": "Audience", "audienceType": "知识工作者" }
+            ],
+            "usageInfo": "仅用于用户拥有授权或合法使用权的公开视频内容，不支持 DRM 绕过、验证码绕过、登录态绕过、Cookie 上传或下载受保护内容。"
+          },
+          {
+            "@type": "WebSite",
+            "@id": "#website",
+            "name": "影知",
+            "url": "%VITE_SITE_URL%/",
+            "inLanguage": "zh-CN",
+            "description": "影知是面向学习整理、内容归档和授权资料分析的公开视频下载与视频总结工具。"
+          },
+          {
+            "@type": "HowTo",
+            "@id": "#how-to-use",
+            "name": "如何使用影知下载并整理公开视频",
+            "description": "复制公开视频链接，粘贴到影知解析，选择清晰度下载，并可继续导出字幕、摘要、章节和思维导图。",
+            "totalTime": "PT2M",
+            "step": [
+              {
+                "@type": "HowToStep",
+                "position": 1,
+                "name": "复制视频链接",
+                "text": "在 YouTube、Bilibili、抖音等平台找到想保存或整理的公开视频，复制视频分享链接或地址栏 URL。"
+              },
+              {
+                "@type": "HowToStep",
+                "position": 2,
+                "name": "粘贴链接并解析",
+                "text": "把链接粘贴到输入框中，点击下载视频，系统会自动识别视频信息、平台来源和可用格式。"
+              },
+              {
+                "@type": "HowToStep",
+                "position": 3,
+                "name": "选择清晰度并下载",
+                "text": "从解析结果中选择需要的清晰度或格式，点击极速下载或云端处理，并可继续导出字幕、摘要和思维导图。"
+              }
+            ]
+          },
+          {
+            "@type": "FAQPage",
+            "@id": "#faq",
+            "mainEntity": [
+              {
+                "@type": "Question",
+                "name": "影知和普通视频下载器有什么区别？",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "影知不仅提供公开视频解析、格式选择和下载任务，还会把可提取字幕整理成摘要、章节大纲、核心要点、术语解释、思维导图和可追问的问答素材。"
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "适合用来整理哪些视频内容？",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "影知适合整理你有权使用的公开课程、公开视频素材、讲座、教程、运营参考视频和内部学习资料，并把内容沉淀成摘要、字幕和笔记。"
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "这个工具的安全和版权边界是什么？",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "影知仅面向授权内容分析、学习整理和内部资料归档，不支持私密内容、受保护内容、DRM 绕过、验证码绕过、登录态绕过、平台 Cookie 上传或账号池代管。"
+                }
+              }
+            ]
+          },
+          {
+            "@type": "BreadcrumbList",
+            "@id": "#breadcrumb",
+            "itemListElement": [
+              {
+                "@type": "ListItem",
+                "position": 1,
+                "name": "首页",
+                "item": "%VITE_SITE_URL%/"
+              },
+              {
+                "@type": "ListItem",
+                "position": 2,
+                "name": "视频下载与 AI 总结工具",
+                "item": "%VITE_SITE_URL%/#tool"
+              }
+            ]
+          }
+        ]
+      }
+    </script>
   </head>
   <body>
     <div id="app"></div>
+    <noscript>
+      <main>
+        <h1>影知 - 免费视频下载器</h1>
+        <p>
+          影知是一个面向公开视频的下载与 AI 学习整理工具，支持粘贴 YouTube、Bilibili、抖音、TikTok 等公开链接，进行视频解析、格式选择、下载任务、字幕导出、摘要生成、章节大纲、思维导图和视频问答。
+        </p>
+        <p>
+          本工具仅面向授权内容分析、学习整理和内部资料归档场景，不支持 DRM 绕过、验证码绕过、登录态绕过、Cookie 上传或下载受保护内容。
+        </p>
+      </main>
+    </noscript>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
