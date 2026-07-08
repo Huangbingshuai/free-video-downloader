@@ -12,6 +12,7 @@
     "@tailwindcss/typography": "^0.5.20",
     "@tailwindcss/vite": "^4.0.0",
     "@vitejs/plugin-vue": "^6.0.0",
+    "lucide-vue-next": "^0.577.0",
     "marked": "^18.0.5",
     "markmap-lib": "^0.18.12",
     "markmap-view": "^0.18.12",

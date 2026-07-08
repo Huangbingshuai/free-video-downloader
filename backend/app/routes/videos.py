@@ -6,6 +6,9 @@ from pathlib import Path
 import re
 import tempfile
 
+from urllib.parse import urlparse
+
+import httpx
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 
@@ -157,3 +160,102 @@ def get_file(job_id: str, file_id: str):
             headers={"Content-Disposition": f'attachment; filename="{record.filename}"'},
         )
     return FileResponse(path, filename=record.filename, media_type="application/octet-stream")
+
+
+THUMBNAIL_ALLOWED_HOSTS = {
+    "i.ytimg.com", "yt3.ggpht.com", "img.youtube.com",
+    "i0.hdslb.com", "i1.hdslb.com", "i2.hdslb.com",
+}
+
+_HOST_REFERER_MAP = {
+    "i.ytimg.com": "https://www.youtube.com/",
+    "yt3.ggpht.com": "https://www.youtube.com/",
+    "img.youtube.com": "https://www.youtube.com/",
+    "i0.hdslb.com": "https://www.bilibili.com/",
+    "i1.hdslb.com": "https://www.bilibili.com/",
+    "i2.hdslb.com": "https://www.bilibili.com/",
+}
+
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_thumbnail_url(url: str) -> str:
+    """修正 yt-dlp 可能返回的带语言后缀的缩略图 URL（如 maxresdefault_en.jpg → maxresdefault.jpg）。"""
+    import re as _re
+    url = _re.sub(r"_(en|zh|ja|ko|fr|de|es|pt|ru|ar)(?=\.jpg|\?|$)", "", url)
+    return url
+
+
+def _thumbnail_fallbacks(url: str) -> list[str]:
+    """为缩略图 URL 生成一组候选地址，按优先级排列。
+
+    注意：标准 /vi/ 路径优先于 /vi_lc/，避免代理因多次 404 中断连接。
+    其次按分辨率降级：maxresdefault → sddefault → hqdefault → mqdefault → default。
+    """
+    import re as _re
+
+    # 1. 路径修正：/vi_lc/ → /vi/ （优先标准路径）
+    path_candidates: list[str] = []
+    if "/vi_lc/" in url:
+        path_candidates.append(url.replace("/vi_lc/", "/vi/"))
+    path_candidates.append(url)
+
+    # 2. 对每个路径变体生成分辨率降级
+    candidates: list[str] = []
+    for base in path_candidates:
+        for res in ("maxresdefault", "sddefault", "hqdefault", "mqdefault", "default"):
+            replaced = _re.sub(r"(maxresdefault|sddefault|hqdefault|mqdefault|default)", res, base)
+            if replaced not in candidates:
+                candidates.append(replaced)
+
+    return candidates
+
+
+@router.get("/thumbnail")
+async def proxy_thumbnail(url: str):
+    """代理视频封面图，避免浏览器端代理/DNS 问题导致图片加载失败。"""
+    parsed = urlparse(url)
+    if parsed.hostname not in THUMBNAIL_ALLOWED_HOSTS:
+        raise HTTPException(status_code=403, detail="不支持的图片来源")
+
+    url = _normalize_thumbnail_url(url)
+    candidates = _thumbnail_fallbacks(url) if parsed.hostname and "yt" in parsed.hostname else [url]
+    proxy = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or None
+    referer = _HOST_REFERER_MAP.get(parsed.hostname or "", "https://www.youtube.com/")
+    logger.info(f"Proxying thumbnail: candidates={candidates[:3]}... (proxy={proxy}, referer={referer})")
+
+    debug_results: list[str] = []
+    last_error = None
+    try:
+        async with httpx.AsyncClient(proxy=proxy, timeout=15) as client:
+            for candidate in candidates:
+                try:
+                    resp = await client.get(candidate, headers={"Referer": referer})
+                    logger.info(f"Thumbnail candidate: {resp.status_code} {candidate}")
+                    debug_results.append(f"{candidate[-50:]}: {resp.status_code}")
+                    if resp.status_code < 400:
+                        content_type = resp.headers.get("content-type", "image/jpeg")
+                        return StreamingResponse(
+                            resp.aiter_bytes(),
+                            media_type=content_type,
+                            headers={"Cache-Control": "public, max-age=86400"},
+                        )
+                    last_error = HTTPException(status_code=resp.status_code, detail=f"封面图获取失败 (HTTP {resp.status_code})")
+                except Exception as exc:
+                    debug_results.append(f"{candidate[-50:]}: ERR {exc}")
+                    continue  # try next candidate
+
+            if last_error:
+                logger.info(f"All thumbnail candidates failed: {'; '.join(debug_results)}")
+                raise HTTPException(status_code=last_error.status_code, detail=f"{last_error.detail} [candidates: {'; '.join(debug_results)}]")
+            raise HTTPException(status_code=502, detail=f"所有封面图候选地址均不可用: {'; '.join(debug_results)}")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="封面图请求超时")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(f"Thumbnail proxy failed: {exc!r}")
+        raise HTTPException(status_code=502, detail=f"封面图代理失败: {type(exc).__name__}: {exc}")

@@ -273,18 +273,66 @@ class TranscriptService:
         except Exception:
             return None
 
+    # 常见语言及其变体，覆盖 YouTube / Bilibili 主流字幕
+    _LANG_VARIANTS: dict[str, list[str]] = {
+        "zh": ["zh", "zh-Hans", "zh-Hant", "zh-CN", "zh-TW", "zh-HK", "danmaku"],
+        "en": ["en", "en-US", "en-GB", "en-CA", "en-AU"],
+        "es": ["es", "es-ES", "es-MX", "es-419"],
+        "ja": ["ja", "ja-JP"],
+        "ko": ["ko", "ko-KR"],
+        "fr": ["fr", "fr-FR", "fr-CA"],
+        "de": ["de", "de-DE", "de-AT"],
+        "pt": ["pt", "pt-BR", "pt-PT"],
+        "ru": ["ru", "ru-RU"],
+        "ar": ["ar", "ar-SA", "ar-AE"],
+        "hi": ["hi", "hi-IN"],
+        "it": ["it", "it-IT"],
+        "nl": ["nl", "nl-NL"],
+        "pl": ["pl", "pl-PL"],
+        "tr": ["tr", "tr-TR"],
+        "vi": ["vi", "vi-VN"],
+        "th": ["th", "th-TH"],
+        "id": ["id", "id-ID"],
+    }
+
+    # 字幕回退语言：当首选语言不可用时，按此顺序尝试
+    _FALLBACK_LANGS = [
+        "en", "en-US", "en-GB",
+        "zh", "zh-Hans", "zh-CN",
+        "es", "es-ES",
+        "ja", "ja-JP",
+        "ko", "ko-KR",
+        "fr", "fr-FR",
+        "de", "de-DE",
+        "pt", "pt-BR",
+        "ru", "ru-RU",
+        "ar", "ar-SA",
+    ]
+
     @staticmethod
     def _expand_languages(lang: str) -> list[str]:
         """展开语言码为变体列表，包含 Bilibili 弹幕等特殊类型。"""
-        variants: dict[str, list[str]] = {
-            "zh": ["zh", "zh-Hans", "zh-Hant", "zh-CN", "zh-TW", "zh-HK", "danmaku"],
-            "en": ["en", "en-US", "en-GB"],
-        }
         base = lang.split("-")[0]
-        return variants.get(base, [lang])
+        return TranscriptService._LANG_VARIANTS.get(base, [lang])
 
     def _download_and_parse_subtitles(self, url: str, preferred_language: str) -> list[TranscriptSegment]:
-        """使用 yt-dlp 内建字幕下载（自动携带 cookies/proxy/headers），写入临时文件再解析。"""
+        """使用 yt-dlp 内建字幕下载，优先尝试首选语言，失败则回退到常见语言。"""
+        # 首选语言
+        segments = self._try_download_subs(url, self._expand_languages(preferred_language))
+        if segments:
+            return segments
+
+        # 回退：如果首选语言不可用，尝试常见语言
+        fallback = self._FALLBACK_LANGS
+        # 避免重复已尝试的语言
+        preferred_set = set(l.lower() for l in self._expand_languages(preferred_language))
+        deduped_fallback = [l for l in fallback if l.lower() not in preferred_set]
+        if deduped_fallback:
+            segments = self._try_download_subs(url, deduped_fallback)
+        return segments
+
+    def _try_download_subs(self, url: str, languages: list[str]) -> list[TranscriptSegment]:
+        """单次尝试：用指定语言列表下载字幕，写入临时文件再解析。"""
         tmpdir = tempfile.mkdtemp(prefix="fvd_subs_")
         try:
             yt_dlp = _yt_dlp()
@@ -297,7 +345,7 @@ class TranscriptService:
                     "skip_download": True,
                     "writesubtitles": True,
                     "writeautomaticsub": True,
-                    "subtitleslangs": self._expand_languages(preferred_language),
+                    "subtitleslangs": languages,
                     "subtitlesformat": fmt,
                     "outtmpl": os.path.join(tmpdir, "%(id)s.%(ext)s"),
                     "noplaylist": True,
