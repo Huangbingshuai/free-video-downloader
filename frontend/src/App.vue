@@ -162,6 +162,24 @@ function formatTimestamp(seconds?: number | null) {
     : `${m}:${String(s).padStart(2, "0")}`;
 }
 
+function formatSrtTimestamp(seconds?: number | null): string {
+  if (seconds === null || seconds === undefined) return "00:00:00,000";
+  const safe = Math.max(0, seconds);
+  const h = Math.floor(safe / 3600);
+  const m = Math.floor((safe % 3600) / 60);
+  const s = Math.floor(safe % 60);
+  const ms = Math.round((safe % 1) * 1000);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
+}
+
+function transcriptToSrt(segments: TranscriptSegment[]): string {
+  return segments.map((seg, i) => {
+    const start = formatSrtTimestamp(seg.start);
+    const end = formatSrtTimestamp(seg.end ?? seg.start + 5);
+    return `${i + 1}\n${start} --> ${end}\n${seg.text}`;
+  }).join("\n\n");
+}
+
 function formatBytes(value?: number | null) {
   if (!value) return "未知大小";
   if (value > 1024 * 1024 * 1024) return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
@@ -592,19 +610,20 @@ function copyTranscriptForUrl(url: string) {
   navigator.clipboard.writeText(text).then(() => showToast("已复制字幕文本"));
 }
 
-function downloadTranscriptForUrl(url: string) {
+function downloadTranscriptSrt(url: string) {
+  const transcript = summaryForUrl(url)?.result?.transcript;
+  if (!transcript?.length) return;
+  const srt = transcriptToSrt(transcript);
+  const filename = (summaryForUrl(url)?.result?.title || "字幕").replace(/[/\\?%*:|"<>]/g, "_") + "_字幕.srt";
+  triggerDownloadBlob(new Blob([srt], { type: "text/plain; charset=utf-8" }), filename);
+}
+
+function downloadTranscriptTxt(url: string) {
   const transcript = summaryForUrl(url)?.result?.transcript;
   if (!transcript?.length) return;
   const text = transcript.map((seg) => `[${formatTimestamp(seg.start)}] ${seg.text}`).join("\n");
   const filename = (summaryForUrl(url)?.result?.title || "字幕").replace(/[/\\?%*:|"<>]/g, "_") + "_字幕.txt";
-  const blob = new Blob([text], { type: "text/plain; charset=utf-8" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(a.href);
+  triggerDownloadBlob(new Blob([text], { type: "text/plain; charset=utf-8" }), filename);
 }
 
 // markmap 状态：每个 summary 独立存储 mindmap markdown、SVG 元素引用和实例
@@ -1069,7 +1088,8 @@ const summaryTabs = [
                   </div>
                   <div v-if="summaryForUrl(item.url)?.result?.transcript?.length" class="mt-4 flex gap-2 border-t border-[#2a303a] pt-4">
                     <button type="button" class="rounded-full border border-[#2a303a] px-3 py-2 text-xs font-black text-slate-200 hover:border-blue-400 hover:text-blue-200" @click="copyTranscriptForUrl(item.url)">复制</button>
-                    <button type="button" class="rounded-full bg-blue-500 px-3 py-2 text-xs font-black text-white hover:bg-blue-400" @click="downloadTranscriptForUrl(item.url)">导出文本</button>
+                    <button type="button" class="rounded-full border border-[#2a303a] px-3 py-2 text-xs font-black text-slate-200 hover:border-blue-400 hover:text-blue-200" @click="downloadTranscriptTxt(item.url)">导出 TXT</button>
+                    <button type="button" class="rounded-full bg-blue-500 px-3 py-2 text-xs font-black text-white hover:bg-blue-400" @click="downloadTranscriptSrt(item.url)">导出 SRT</button>
                   </div>
                 </div>
 
