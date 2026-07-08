@@ -149,12 +149,34 @@ class TranscriptService:
         from app.services.douyin_resolver import resolve as resolve_douyin
         builtin_video = resolve_douyin(url)
         if builtin_video:
-            track_info, segments = self._try_extract_subtitles(url, preferred_language)
+            # 抖音字幕提取不使用 yt-dlp（需 cookie 且提取器不支持字幕下载），
+            # 改为从页面已解析数据中提取可用文本内容
+            segments = self._try_douyin_subtitles(builtin_video)
             if segments:
                 return builtin_video, segments
             raise TranscriptUnavailable(
                 "抖音视频暂未检测到平台内嵌字幕。"
                 "部分抖音视频的字幕是画面内嵌的（烧录在视频中），无法以文本形式提取，请尝试其他平台（如 YouTube、Bilibili）带有独立字幕轨的视频。"
+            )
+
+        # 小红书：页面不含笔记数据，用 yt-dlp 取视频信息，字幕用简介代替
+        from app.services.xiaohongshu_resolver import is_xiaohongshu_url
+        if is_xiaohongshu_url(url):
+            try:
+                yt_dlp = _yt_dlp()
+                opts = _base_ytdlp_opts()
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    raw = ydl.extract_info(url, download=False)
+                    info = ydl.sanitize_info(raw)
+                video = self._video_info(url, info)
+                segments = self._try_builtin_subtitles(video, "小红书")
+                if segments:
+                    return video, segments
+            except Exception:
+                pass
+            raise TranscriptUnavailable(
+                "小红书笔记暂未检测到可提取的文本字幕。"
+                "小红书视频的字幕通常是画面内嵌的，请尝试其他平台（如 YouTube、Bilibili）带有独立字幕轨的视频。"
             )
 
         # Bilibili 优先用官方 API 提取字幕（CC字幕 + AI字幕），比 yt-dlp 内建下载更可靠
@@ -193,6 +215,23 @@ class TranscriptService:
     @staticmethod
     def _is_bilibili_url(url: str) -> bool:
         return "bilibili.com" in url or "b23.tv" in url
+
+    @staticmethod
+    def _try_douyin_subtitles(video_info: VideoInfo) -> list[TranscriptSegment]:
+        return TranscriptService._try_builtin_subtitles(video_info, "抖音")
+
+    @staticmethod
+    def _try_builtin_subtitles(video_info: VideoInfo, platform: str) -> list[TranscriptSegment]:
+        """从内置解析器已获取的视频信息中提取可用文本内容。
+
+        适用于抖音、小红书等无独立字幕轨的平台，将视频简介作为文本内容返回。
+        简介过短或为默认标题时视为无可用内容。
+        """
+        default_titles = {"抖音公开视频", "小红书笔记", "小红书图集"}
+        desc = (video_info.title or "").strip()
+        if desc and desc not in default_titles and len(desc) >= 10:
+            return [TranscriptSegment(start=0, end=None, text=desc)]
+        return []
 
     @staticmethod
     def _parse_bvid(url: str) -> Optional[str]:
@@ -374,24 +413,6 @@ class TranscriptService:
             return []
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
-
-    def _try_extract_subtitles(
-        self, url: str, preferred_language: str
-    ) -> tuple[dict[str, Any] | None, list[TranscriptSegment]]:
-        """Try yt-dlp subtitle extraction, returning (info, segments)."""
-        segments = self._download_and_parse_subtitles(url, preferred_language)
-        if not segments:
-            return None, []
-        # Also get basic info
-        try:
-            yt_dlp = _yt_dlp()
-            opts = _base_ytdlp_opts()
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                raw = ydl.extract_info(url, download=False)
-                info = ydl.sanitize_info(raw)
-            return info, segments
-        except Exception:
-            return None, segments
 
     def _parse_track(self, content: str, ext: str) -> list[TranscriptSegment]:
         ext = ext.lower()

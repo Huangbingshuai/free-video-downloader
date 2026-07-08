@@ -132,7 +132,7 @@ def direct_download(
     except Exception as exc:
         raise HTTPException(status_code=409, detail=f"直链解析失败，请改用服务端下载：{_friendly_error(exc)}") from exc
     if not direct_url:
-        raise HTTPException(status_code=409, detail="直链不可用或已过期，请改用服务端下载")
+        raise HTTPException(status_code=409, detail="该格式不支持直链下载（如默认最佳质量需要合并音视频），请选择单一格式或使用服务端下载")
     return RedirectResponse(direct_url, status_code=302)
 
 
@@ -167,6 +167,8 @@ THUMBNAIL_ALLOWED_HOSTS = {
     "i0.hdslb.com", "i1.hdslb.com", "i2.hdslb.com",
 }
 
+THUMBNAIL_ALLOWED_SUFFIXES = (".douyinpic.com", ".xhscdn.com")
+
 _HOST_REFERER_MAP = {
     "i.ytimg.com": "https://www.youtube.com/",
     "yt3.ggpht.com": "https://www.youtube.com/",
@@ -175,6 +177,26 @@ _HOST_REFERER_MAP = {
     "i1.hdslb.com": "https://www.bilibili.com/",
     "i2.hdslb.com": "https://www.bilibili.com/",
 }
+
+
+def _is_thumbnail_host_allowed(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    if hostname in THUMBNAIL_ALLOWED_HOSTS:
+        return True
+    return hostname.endswith(THUMBNAIL_ALLOWED_SUFFIXES)
+
+
+def _thumbnail_referer(hostname: str | None) -> str:
+    if not hostname:
+        return ""
+    if hostname in _HOST_REFERER_MAP:
+        return _HOST_REFERER_MAP[hostname]
+    if hostname.endswith(".douyinpic.com"):
+        return "https://www.douyin.com/"
+    if hostname.endswith(".xhscdn.com"):
+        return "https://www.xiaohongshu.com/"
+    return ""
 
 
 import logging
@@ -218,13 +240,13 @@ def _thumbnail_fallbacks(url: str) -> list[str]:
 async def proxy_thumbnail(url: str):
     """代理视频封面图，避免浏览器端代理/DNS 问题导致图片加载失败。"""
     parsed = urlparse(url)
-    if parsed.hostname not in THUMBNAIL_ALLOWED_HOSTS:
+    if not _is_thumbnail_host_allowed(parsed.hostname):
         raise HTTPException(status_code=403, detail="不支持的图片来源")
 
     url = _normalize_thumbnail_url(url)
     candidates = _thumbnail_fallbacks(url) if parsed.hostname and "yt" in parsed.hostname else [url]
     proxy = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or None
-    referer = _HOST_REFERER_MAP.get(parsed.hostname or "", "https://www.youtube.com/")
+    referer = _thumbnail_referer(parsed.hostname) or "https://www.youtube.com/"
     logger.info(f"Proxying thumbnail: candidates={candidates[:3]}... (proxy={proxy}, referer={referer})")
 
     debug_results: list[str] = []

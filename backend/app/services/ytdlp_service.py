@@ -6,7 +6,6 @@ import subprocess
 from pathlib import Path
 import shutil
 from typing import Any
-from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from app.schemas import SubtitleTrack, VideoFormat, VideoInfo
@@ -187,38 +186,19 @@ class YtDlpService:
     def get_direct_url(self, url: str, format_id: str = DEFAULT_FORMAT_SELECTOR) -> str | None:
         format_id = self.normalize_format_id(format_id)
         info = self.extract(url)
-        external_candidate = next(
+        # 精确匹配：format_id 一致的格式，且有直链
+        exact = next(
             (item.direct_url for item in info.formats if item.format_id == format_id and item.direct_url),
             None,
         )
-        if external_candidate:
-            return external_candidate
+        if exact:
+            return exact
+        # 默认格式需要 yt-dlp 合并音视频，无法提供单条直链
         if format_id == DEFAULT_FORMAT_SELECTOR:
             return None
-        if format_id == "b":
-            candidate = next((item.direct_url for item in info.formats if item.direct_url), None)
-        else:
-            candidate = next((item.direct_url for item in info.formats if item.format_id == format_id), None)
-        if candidate and self.probe_direct_url(candidate):
-            return candidate
-        return None
-
-    def probe_direct_url(self, url: str) -> bool:
-        try:
-            req = Request(url, method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
-            with urlopen(req, timeout=8) as response:
-                return 200 <= response.status < 400
-        except Exception:
-            try:
-                req = Request(
-                    url,
-                    method="GET",
-                    headers={"User-Agent": "Mozilla/5.0", "Range": "bytes=0-1"},
-                )
-                with urlopen(req, timeout=8) as response:
-                    return response.status in {200, 206}
-            except (URLError, TimeoutError, ValueError, OSError):
-                return False
+        # 回退：任一可用直链（跳过探测，yt-dlp 刚提取的 URL 尚未过期）
+        fallback = next((item.direct_url for item in info.formats if item.direct_url), None)
+        return fallback
 
     def normalize_format_id(self, format_id: str | None) -> str:
         if not format_id or format_id == "best":

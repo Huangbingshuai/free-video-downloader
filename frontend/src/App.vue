@@ -2286,33 +2286,35 @@ const summaryTabs = [
           </div>
 
           <div class="mt-10 grid gap-6 md:grid-cols-2">
-            <article class="flex min-h-[420px] flex-col rounded-2xl border border-[#f2ded3] bg-white p-7 shadow-sm shadow-[#f1c7b8]/20">
+            <article class="flex min-h-[460px] flex-col rounded-2xl border border-[#f2ded3] bg-white p-7 shadow-sm shadow-[#f1c7b8]/20">
               <div>
                 <h3 class="text-xl font-black text-slate-950">免费版</h3>
-                <p class="mt-2 text-sm font-medium text-slate-500">每日 2 次免费 AI 总结</p>
-                <p class="mt-8 flex items-end gap-2 text-4xl font-black text-slate-950">
+                <p class="mt-2 text-base font-medium leading-7 text-slate-500">每日 2 次免费 AI 总结</p>
+                <p class="mt-8 flex items-end gap-2 text-4xl font-black leading-none text-slate-950">
                   ¥0 <span class="pb-1 text-sm font-bold text-slate-400">/永久</span>
                 </p>
               </div>
-              <ul class="mt-8 space-y-4 text-sm font-semibold leading-6 text-slate-500">
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />每日 2 次免费 AI 总结</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />公开视频解析</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />直链下载与云端处理下载</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />多清晰度格式选择</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />基础视频信息解析</li>
+              <ul class="mt-9 space-y-4 text-base font-semibold leading-7 text-slate-500">
+                <li class="grid grid-cols-[20px_1fr] items-start gap-4"><CheckCircle2 class="mt-[5px] h-4 w-4 text-[#14b8a6]" /><span>每日 2 次免费 AI 总结</span></li>
+                <li class="grid grid-cols-[20px_1fr] items-start gap-4"><CheckCircle2 class="mt-[5px] h-4 w-4 text-[#14b8a6]" /><span>公开视频解析</span></li>
+                <li class="grid grid-cols-[20px_1fr] items-start gap-4"><CheckCircle2 class="mt-[5px] h-4 w-4 text-[#14b8a6]" /><span>直链下载与云端处理下载</span></li>
+                <li class="grid grid-cols-[20px_1fr] items-start gap-4"><CheckCircle2 class="mt-[5px] h-4 w-4 text-[#14b8a6]" /><span>多清晰度格式选择</span></li>
+                <li class="grid grid-cols-[20px_1fr] items-start gap-4"><CheckCircle2 class="mt-[5px] h-4 w-4 text-[#14b8a6]" /><span>基础视频信息解析</span></li>
               </ul>
-              <button type="button" class="mt-auto rounded-full border border-[#f2ded3] bg-[#fff8f3] px-5 py-3 text-sm font-black text-slate-700" disabled>
-                当前方案
-              </button>
+              <div class="mt-auto pt-8">
+                <button type="button" class="w-full rounded-full border border-[#f2ded3] bg-[#fff8f3] px-5 py-3 text-base font-black text-slate-700" disabled>
+                  当前方案
+                </button>
+              </div>
             </article>
 
-            <article class="relative flex min-h-[420px] flex-col overflow-hidden rounded-2xl border border-[#ffc9bd] bg-[#fff8f3] p-7 text-slate-900 shadow-xl shadow-[#f1c7b8]/35">
+            <article class="relative flex min-h-[460px] flex-col overflow-hidden rounded-2xl border border-[#ffc9bd] bg-[#fff8f3] p-7 text-slate-900 shadow-xl shadow-[#f1c7b8]/35">
               <div class="absolute -right-20 -top-20 h-52 w-52 rounded-full bg-[#ff5a5f]/10"></div>
               <div class="relative">
                 <div class="flex items-start justify-between gap-4">
                   <div>
                     <h3 class="text-xl font-black text-slate-950">VIP 高级版</h3>
-                    <p class="mt-2 text-sm font-medium leading-6 text-slate-500">
+                    <p class="mt-2 text-base font-medium leading-7 text-slate-500">
                       AI 学习整理能力，永久解锁
                     </p>
                   </div>
@@ -2320,7 +2322,7 @@ const summaryTabs = [
                     {{ authUser?.is_vip ? "已开通" : "推荐" }}
                   </span>
                 </div>
-                <p class="mt-8 flex flex-wrap items-end gap-2 text-4xl font-black text-slate-950">
+                <p class="mt-8 flex flex-wrap items-end gap-2 text-4xl font-black leading-none text-slate-950">
                   ¥9.9 <span class="pb-1 text-sm font-bold text-[#ff5a5f]">永久</span>
                 </p>
                 <p v-if="authUser?.is_vip" class="mt-3 inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-700">
@@ -2328,22 +2330,24 @@ const summaryTabs = [
                   AI 功能已解锁
                 </p>
               </div>
-              <ul class="relative mt-8 space-y-4 text-sm font-semibold leading-6 text-slate-600">
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />AI 视频内容总结</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />章节大纲与核心要点</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />字幕整理与 TXT / SRT 导出</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />思维导图生成与导出</li>
-                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />基于视频内容的 AI 问答</li>
+              <ul class="relative mt-9 space-y-4 text-base font-semibold leading-7 text-slate-600">
+                <li class="grid grid-cols-[20px_1fr] items-start gap-4"><CheckCircle2 class="mt-[5px] h-4 w-4 text-[#ff5a5f]" /><span>AI 视频内容总结</span></li>
+                <li class="grid grid-cols-[20px_1fr] items-start gap-4"><CheckCircle2 class="mt-[5px] h-4 w-4 text-[#ff5a5f]" /><span>章节大纲与核心要点</span></li>
+                <li class="grid grid-cols-[20px_1fr] items-start gap-4"><CheckCircle2 class="mt-[5px] h-4 w-4 text-[#ff5a5f]" /><span>字幕整理与 TXT / SRT 导出</span></li>
+                <li class="grid grid-cols-[20px_1fr] items-start gap-4"><CheckCircle2 class="mt-[5px] h-4 w-4 text-[#ff5a5f]" /><span>思维导图生成与导出</span></li>
+                <li class="grid grid-cols-[20px_1fr] items-start gap-4"><CheckCircle2 class="mt-[5px] h-4 w-4 text-[#ff5a5f]" /><span>基于视频内容的 AI 问答</span></li>
               </ul>
-              <button
-                type="button"
-                class="relative mt-auto rounded-full px-5 py-3 text-sm font-black shadow-lg transition disabled:cursor-not-allowed"
-                :class="authUser?.is_vip ? 'border border-emerald-200 bg-emerald-50 text-emerald-700 shadow-emerald-500/10' : 'bg-[#ff5a5f] text-white shadow-[#ff5a5f]/25 hover:bg-[#ef4444]'"
-                :disabled="billingLoading || Boolean(authUser?.is_vip)"
-                @click="startVipCheckout"
-              >
-                {{ authUser?.is_vip ? "已开通 VIP" : billingLoading ? "正在创建支付..." : "立即开通 VIP" }}
-              </button>
+              <div class="relative mt-auto pt-8">
+                <button
+                  type="button"
+                  class="w-full rounded-full px-5 py-3 text-base font-black shadow-lg transition disabled:cursor-not-allowed"
+                  :class="authUser?.is_vip ? 'border border-emerald-200 bg-emerald-50 text-emerald-700 shadow-emerald-500/10' : 'bg-[#ff5a5f] text-white shadow-[#ff5a5f]/25 hover:bg-[#ef4444]'"
+                  :disabled="billingLoading || Boolean(authUser?.is_vip)"
+                  @click="startVipCheckout"
+                >
+                  {{ authUser?.is_vip ? "已开通 VIP" : billingLoading ? "正在创建支付..." : "立即开通 VIP" }}
+                </button>
+              </div>
             </article>
           </div>
         </div>
