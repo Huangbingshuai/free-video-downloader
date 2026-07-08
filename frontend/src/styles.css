@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 :root {
   color: #f5f7fa;
@@ -32,4 +33,27 @@ input {
     linear-gradient(rgba(37, 99, 235, 0.08) 1px, transparent 1px),
     linear-gradient(90deg, rgba(37, 99, 235, 0.08) 1px, transparent 1px);
   background-size: 36px 36px;
+}
+
+/* ── 自定义 prose 主题：蓝白主色调，适配暗色背景 ── */
+.prose-theme {
+  --tw-prose-body: #cdd5e0;
+  --tw-prose-headings: #e2e8f0;
+  --tw-prose-lead: #94a3b8;
+  --tw-prose-links: #60a5fa;
+  --tw-prose-bold: #f1f5f9;
+  --tw-prose-counters: #64748b;
+  --tw-prose-bullets: #475569;
+  --tw-prose-hr: #2a303a;
+  --tw-prose-quotes: #e2e8f0;
+  --tw-prose-quote-borders: #3b82f6;
+  --tw-prose-captions: #94a3b8;
+  --tw-prose-kbd: #e2e8f0;
+  --tw-prose-kbd-shadows: none;
+  --tw-prose-code: #fda4af;
+  --tw-prose-pre-code: #cdd5e0;
+  --tw-prose-pre-bg: #0a0c10;
+  --tw-prose-th-borders: #334155;
+  --tw-prose-td-borders: #1e293b;
+  --tw-prose-th-bg: rgba(37, 99, 235, 0.12);
 }

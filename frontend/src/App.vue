@@ -2,6 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { Transformer } from "markmap-lib";
 import { Markmap } from "markmap-view";
+import { marked } from "marked";
+
+marked.setOptions({ breaks: true, gfm: true });
 
 type VideoFormat = {
   format_id: string;
@@ -314,42 +317,7 @@ function summaryForUrl(url: string) {
 
 function renderMarkdown(md: string): string {
   if (!md) return "";
-  let html = md
-    // 转义 HTML
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    // 代码块
-    .replace(/```(\w*)\n([\s\S]*?)```/g, "<pre class=\"my-3 rounded-lg bg-[#0a0c10] p-3 text-xs leading-5 overflow-x-auto\"><code>$2</code></pre>")
-    // 行内代码
-    .replace(/`([^`]+)`/g, "<code class=\"rounded bg-[#0a0c10] px-1 py-0.5 text-xs font-mono text-rose-300\">$1</code>")
-    // 标题
-    .replace(/^#### (.+)$/gm, "<h4 class=\"mt-4 mb-2 text-sm font-bold text-slate-100\">$1</h4>")
-    .replace(/^### (.+)$/gm, "<h3 class=\"mt-5 mb-2 text-base font-bold text-blue-200\">$1</h3>")
-    .replace(/^## (.+)$/gm, "<h2 class=\"mt-6 mb-3 text-lg font-extrabold text-blue-300\">$1</h2>")
-    .replace(/^# (.+)$/gm, "<h1 class=\"mt-6 mb-4 text-xl font-extrabold text-white\">$1</h1>")
-    // 水平线
-    .replace(/^---$/gm, "<hr class=\"my-4 border-[#2a303a]\">")
-    // 加粗
-    .replace(/\*\*(.+?)\*\*/g, "<strong class=\"font-bold text-slate-100\">$1</strong>")
-    // 斜体
-    .replace(/\*(.+?)\*/g, "<em class=\"italic\">$1</em>")
-    // 无序列表项
-    .replace(/^- (.+)$/gm, "<li class=\"ml-4 list-disc text-sm leading-7 text-slate-300\">$1</li>")
-    // 表格分隔符（跳过）
-    .replace(/^\|[-:| ]+\|$/gm, "")
-    // 表格行
-    .replace(/^\|(.+)\|$/gm, (_: string, content: string) => {
-      const cells = content.split("|").map((c: string) => `<td class="border border-[#2a303a] px-3 py-1.5 text-sm text-slate-300">${c.trim()}</td>`).join("");
-      return `<tr>${cells}</tr>`;
-    })
-    // 段落（连续非空、非标记行）
-    .replace(/^(?!<[a-zA-Z/]|$)(.+)$/gm, "<p class=\"text-sm leading-7 text-slate-300 my-2\">$1</p>");
-
-  // 包裹连续 <li> 为 <ul>
-  html = html.replace(/(<li class="[^"]*">[^<]*<\/li>\n?)+/g, (match) => `<ul class="my-2 space-y-1">${match}</ul>`);
-  // 包裹连续 <tr> 为 <table>
-  html = html.replace(/(<tr>[^<]*(?:<td[^>]*>[^<]*<\/td>)+<\/tr>\n?)+/g, (match) => `<table class="my-3 w-full border-collapse border border-[#2a303a] rounded-lg overflow-hidden">${match}</table>`);
-
-  return html;
+  return marked.parse(md) as string;
 }
 
 function flattenedMindmap(node?: MindMapNode | null, depth = 0): Array<{ name: string; depth: number }> {
@@ -1062,7 +1030,7 @@ const summaryTabs = [
                 <!-- 总结摘要 -->
                 <div v-if="activeTabForUrl(item.url) === 'summary'">
                   <template v-if="summaryForUrl(item.url)?.result">
-                    <div class="summary-md prose-sm max-w-none text-slate-300 leading-7" v-html="renderMarkdown(summaryForUrl(item.url)?.result?.markdown || '')"></div>
+                    <div class="prose prose-theme prose-sm max-w-none" v-html="renderMarkdown(summaryForUrl(item.url)?.result?.markdown || '')"></div>
                     <div class="mt-4 flex gap-2 border-t border-[#2a303a] pt-4">
                       <button type="button" class="rounded-full border border-[#2a303a] px-3 py-2 text-xs font-black text-slate-200 hover:border-blue-400 hover:text-blue-200" @click="copyMarkdownForUrl(item.url)">复制</button>
                       <button type="button" class="rounded-full bg-blue-500 px-3 py-2 text-xs font-black text-white hover:bg-blue-400" @click="downloadMarkdownForUrl(item.url)">导出 Markdown</button>
@@ -1156,7 +1124,7 @@ const summaryTabs = [
                         >
                           <div class="flex justify-start">
                             <div class="max-w-[82%] rounded-2xl rounded-bl-md bg-[#1a1d24] border border-[#2a303a]/80 px-5 py-3.5 text-sm leading-7 text-slate-200 shadow-sm hover:shadow-md hover:border-[#3a4450] transition-all duration-200">
-                              <p class="whitespace-pre-wrap break-words">{{ qa.answer }}</p>
+                              <div class="prose prose-theme prose-sm max-w-none" v-html="renderMarkdown(qa.answer)"></div>
                               <!-- 操作按钮 -->
                               <div class="mt-3 flex items-center gap-1.5 justify-end opacity-70 group-hover/bubble:opacity-100 transition-opacity">
                                 <button

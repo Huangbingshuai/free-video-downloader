@@ -9,8 +9,10 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "@tailwindcss/typography": "^0.5.20",
     "@tailwindcss/vite": "^4.0.0",
     "@vitejs/plugin-vue": "^6.0.0",
+    "marked": "^18.0.5",
     "markmap-lib": "^0.18.12",
     "markmap-view": "^0.18.12",
     "tailwindcss": "^4.0.0",
