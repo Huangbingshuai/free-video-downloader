@@ -5,7 +5,7 @@ import json
 import re
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.schemas import (
@@ -15,6 +15,8 @@ from app.schemas import (
     CreateSummaryResponse,
     SummaryStatus,
 )
+from app.dependencies import get_current_vip_user
+from app.services.auth_service import UserRecord
 from app.services.deepseek_service import DeepSeekUnavailable, deepseek_service
 from app.services.summary_store import summary_store
 from app.services.transcript_service import TranscriptUnavailable, transcript_service
@@ -22,6 +24,10 @@ from app.services.transcript_service import TranscriptUnavailable, transcript_se
 router = APIRouter(prefix="/api", tags=["summaries"])
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+# 会话记忆：每个 summary_id 保留最近 QA 对话历史（纯内存）
+_qa_sessions: dict[str, list[dict[str, str]]] = {}
+QA_MAX_HISTORY = 40  # 最多 20 轮问答（每轮 user + assistant 共 2 条）
 
 
 def _friendly_ai_error(error: Exception | str) -> str:
@@ -130,8 +136,12 @@ def _run_summary_job_stream(summary_id: str, url: str, language: str) -> None:
 
 
 @router.post("/summaries", response_model=CreateSummaryResponse)
-def create_summary(payload: CreateSummaryRequest, background_tasks: BackgroundTasks) -> CreateSummaryResponse:
-    job = summary_store.create(str(payload.url))
+def create_summary(
+    payload: CreateSummaryRequest,
+    background_tasks: BackgroundTasks,
+    user: UserRecord = Depends(get_current_vip_user),
+) -> CreateSummaryResponse:
+    job = summary_store.create(str(payload.url), user_id=user.id)
     background_tasks.add_task(
         _run_summary_job_stream,
         job.summary_id,
@@ -142,18 +152,26 @@ def create_summary(payload: CreateSummaryRequest, background_tasks: BackgroundTa
 
 
 @router.get("/summaries/{summary_id}", response_model=SummaryStatus)
-def get_summary(summary_id: str) -> SummaryStatus:
+def get_summary(summary_id: str, user: UserRecord = Depends(get_current_vip_user)) -> SummaryStatus:
     job = summary_store.get(summary_id)
     if job is None:
+        raise HTTPException(status_code=404, detail="AI 分析任务不存在")
+    if job.user_id != user.id:
         raise HTTPException(status_code=404, detail="AI 分析任务不存在")
     return summary_store.to_status(job)
 
 
 @router.get("/summaries/{summary_id}/stream")
-async def stream_summary(summary_id: str, request: Request):
+async def stream_summary(
+    summary_id: str,
+    request: Request,
+    user: UserRecord = Depends(get_current_vip_user),
+):
     """SSE endpoint that streams summary generation events."""
     job = summary_store.get(summary_id)
     if job is None:
+        raise HTTPException(status_code=404, detail="AI 分析任务不存在")
+    if job.user_id != user.id:
         raise HTTPException(status_code=404, detail="AI 分析任务不存在")
 
     async def event_generator():
@@ -177,17 +195,32 @@ async def stream_summary(summary_id: str, request: Request):
 
 
 @router.post("/summaries/{summary_id}/questions", response_model=AskSummaryResponse)
-def ask_summary(summary_id: str, payload: AskSummaryRequest) -> AskSummaryResponse:
+def ask_summary(
+    summary_id: str,
+    payload: AskSummaryRequest,
+    user: UserRecord = Depends(get_current_vip_user),
+) -> AskSummaryResponse:
     job = summary_store.get(summary_id)
     if job is None:
+        raise HTTPException(status_code=404, detail="AI 分析任务不存在")
+    if job.user_id != user.id:
         raise HTTPException(status_code=404, detail="AI 分析任务不存在")
     if job.status != "success" or job.result is None:
         raise HTTPException(status_code=409, detail="AI 分析尚未完成，暂不能提问")
     try:
-        return deepseek_service.answer(
+        history = _qa_sessions.get(summary_id, [])
+        result = deepseek_service.answer(
             question=payload.question,
             summary=job.result,
+            history=history,
         )
+        # 保存本轮问答到历史
+        session = _qa_sessions.setdefault(summary_id, [])
+        session.append({"role": "user", "content": payload.question})
+        session.append({"role": "assistant", "content": result.answer})
+        if len(session) > QA_MAX_HISTORY:
+            del session[: len(session) - QA_MAX_HISTORY]
+        return result
     except DeepSeekUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except httpx.HTTPStatusError as exc:
@@ -197,13 +230,22 @@ def ask_summary(summary_id: str, payload: AskSummaryRequest) -> AskSummaryRespon
 
 
 @router.post("/summaries/{summary_id}/questions/stream")
-async def ask_summary_stream(summary_id: str, payload: AskSummaryRequest, request: Request):
+async def ask_summary_stream(
+    summary_id: str,
+    payload: AskSummaryRequest,
+    request: Request,
+    user: UserRecord = Depends(get_current_vip_user),
+):
     """SSE endpoint that streams AI Q&A answer token by token."""
     job = summary_store.get(summary_id)
     if job is None:
         raise HTTPException(status_code=404, detail="AI 分析任务不存在")
+    if job.user_id != user.id:
+        raise HTTPException(status_code=404, detail="AI 分析任务不存在")
     if job.status != "success" or job.result is None:
         raise HTTPException(status_code=409, detail="AI 分析尚未完成，暂不能提问")
+
+    history = _qa_sessions.get(summary_id, [])
 
     async def event_generator():
         try:
@@ -214,12 +256,29 @@ async def ask_summary_stream(summary_id: str, payload: AskSummaryRequest, reques
                 lambda: deepseek_service.answer_stream(
                     question=payload.question,
                     summary=job.result,
+                    history=history,
                 ),
             )
+            answer_accumulated = ""
             for event in gen:
                 if await request.is_disconnected():
                     break
+                # 从 done 事件中提取完整回答用于保存历史
+                try:
+                    data_str = event.strip()
+                    if data_str.startswith("data: "):
+                        data = json.loads(data_str[6:])
+                        if data.get("type") == "done":
+                            answer_accumulated = data.get("answer", "")
+                except Exception:
+                    pass
                 yield event
+            # 保存本轮问答到历史
+            session = _qa_sessions.setdefault(summary_id, [])
+            session.append({"role": "user", "content": payload.question})
+            session.append({"role": "assistant", "content": answer_accumulated or "未能生成回答。"})
+            if len(session) > QA_MAX_HISTORY:
+                del session[: len(session) - QA_MAX_HISTORY]
         except DeepSeekUnavailable as exc:
             yield f"data: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
         except httpx.HTTPStatusError as exc:

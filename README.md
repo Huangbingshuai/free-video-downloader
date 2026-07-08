@@ -88,3 +88,4 @@ npm run build
 - `docs/requirements-analysis.md`：需求分析、边界和阶段规划。
 - `docs/solution-design.md`：架构、API、下载策略和测试策略。
 - `docs/implementation-summary.md`：实现总结、内置解析器原理、API 汇总。
+- `docs/membership-stripe.md`：会员购买、Stripe 配置和本地测试指南。

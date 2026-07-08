@@ -17,8 +17,11 @@ else:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.routes.auth import router as auth_router
+from app.routes.billing import router as billing_router
 from app.routes.summaries import router as summaries_router
 from app.routes.videos import router as videos_router
+from app.services.database import init_db
 
 _pot_process: subprocess.Popen | None = None
 
@@ -73,6 +76,7 @@ def _stop_pot_server() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    init_db()
     _start_pot_server()
     yield
     _stop_pot_server()
@@ -88,11 +92,13 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
+app.include_router(billing_router)
 app.include_router(videos_router)
 app.include_router(summaries_router)
 

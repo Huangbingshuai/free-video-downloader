@@ -153,3 +153,38 @@ class AnswerReference(BaseModel):
 class AskSummaryResponse(BaseModel):
     answer: str
     references: list[AnswerReference] = Field(default_factory=list)
+
+
+class RegisterRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class AuthUser(BaseModel):
+    id: str
+    email: str
+    is_vip: bool = False
+    vip_activated_at: str | None = None
+
+
+class AuthResponse(BaseModel):
+    user: AuthUser | None = None
+
+
+class MembershipStatus(BaseModel):
+    is_authenticated: bool
+    is_vip: bool
+    vip_activated_at: str | None = None
+    user: AuthUser | None = None
+
+
+class CheckoutSessionResponse(BaseModel):
+    status: str
+    checkout_url: str | None = None
+    session_id: str | None = None
+    is_vip: bool = False

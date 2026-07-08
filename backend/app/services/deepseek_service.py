@@ -135,25 +135,26 @@ class DeepSeekService:
         *,
         question: str,
         summary: SummaryResult,
+        history: list[dict[str, str]] | None = None,
     ) -> AskSummaryResponse:
         self._check_api_key()
-        payload = self._invoke_json(
-            self._chat_json_llm,
-            [
-                {"role": "system", "content": QA_JSON_SYSTEM},
-                {
-                    "role": "user",
-                    "content": (
-                        "输出 JSON 字段：answer(string), references([{start,text}])。"
-                        "references 选择最能支撑答案的字幕片段，最多 5 条。\n\n"
-                        f"视频摘要：{summary.overview}\n"
-                        f"核心要点：{json.dumps(summary.key_points, ensure_ascii=False)}\n"
-                        f"字幕：\n{transcript_to_text(summary.transcript, QA_CONTEXT_CHAR_LIMIT)}\n\n"
-                        f"问题：{question}"
-                    ),
-                },
-            ],
+        messages: list[dict[str, str]] = [{"role": "system", "content": QA_JSON_SYSTEM}]
+        for entry in (history or [])[-20:]:  # 最近 20 轮
+            messages.append(entry)
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "输出 JSON 字段：answer(string), references([{start,text}])。"
+                    "references 选择最能支撑答案的字幕片段，最多 5 条。\n\n"
+                    f"视频摘要：{summary.overview}\n"
+                    f"核心要点：{json.dumps(summary.key_points, ensure_ascii=False)}\n"
+                    f"字幕：\n{transcript_to_text(summary.transcript, QA_CONTEXT_CHAR_LIMIT)}\n\n"
+                    f"问题：{question}"
+                ),
+            },
         )
+        payload = self._invoke_json(self._chat_json_llm, messages)
         refs = [
             AnswerReference(start=self._float_or_none(item.get("start")), text=str(item.get("text") or ""))
             for item in payload.get("references", [])
@@ -235,11 +236,17 @@ class DeepSeekService:
         *,
         question: str,
         summary: SummaryResult,
+        history: list[dict[str, str]] | None = None,
     ):
-        """Stream AI Q&A answer token by token, yielding SSE event strings."""
+        """Stream AI Q&A answer token by token, yielding SSE event strings.
+
+        支持传入对话历史，AI 可感知当前 session 内的前序问答。
+        """
         self._check_api_key()
-        messages = [
-            {"role": "system", "content": QA_STREAM_SYSTEM},
+        messages: list[dict[str, str]] = [{"role": "system", "content": QA_STREAM_SYSTEM}]
+        for entry in (history or [])[-20:]:  # 最近 20 轮
+            messages.append(entry)
+        messages.append(
             {
                 "role": "user",
                 "content": (
@@ -252,7 +259,7 @@ class DeepSeekService:
                     "请基于以上信息回答用户提问。如果问题与视频无关，请礼貌拒绝。"
                 ),
             },
-        ]
+        )
 
         accumulated = ""
         for chunk in self._chat_text_llm.stream(messages):

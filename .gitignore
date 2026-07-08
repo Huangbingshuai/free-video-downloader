@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 backend/downloads/
+backend/data/
 backend/.env
 backend/pot_server/node_modules/
 backend/pot_server/tsconfig.tsbuildinfo

@@ -7,3 +7,6 @@ httpx>=0.27
 python-dotenv>=1.0
 langchain-deepseek>=0.1
 langchain-core>=0.3
+stripe>=13.0
+pwdlib[argon2]>=0.2
+PyJWT>=2.8

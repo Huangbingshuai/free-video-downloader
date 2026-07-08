@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Component } from "vue";
-import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import {
   Bot,
   Brain,
@@ -20,6 +20,8 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  LogOut,
+  User,
   Video,
   X,
   Zap,
@@ -104,6 +106,13 @@ type SummaryStatus = {
   result?: SummaryResult | null;
 };
 
+type AuthUser = {
+  id: string;
+  email: string;
+  is_vip: boolean;
+  vip_activated_at?: string | null;
+};
+
 type QuestionAnswer = {
   question: string;
   answer: string;
@@ -146,6 +155,15 @@ const complianceAccepted = ref(localStorage.getItem("fvd_compliance_ok") === "1"
 const complianceChecked = ref(false);
 const infoDrawerOpen = ref(false);
 const activeDrawerTab = ref<DrawerTab>("platforms");
+const authUser = ref<AuthUser | null>(null);
+const authChecking = ref(false);
+const authModalOpen = ref(false);
+const authMode = ref<"login" | "register">("login");
+const authEmail = ref("");
+const authPassword = ref("");
+const authError = ref("");
+const authSubmitting = ref(false);
+const billingLoading = ref(false);
 let toastTimer: number | undefined;
 
 function showToast(msg: string) {
@@ -181,6 +199,119 @@ const rawUrlCount = computed(() => (urlInput.value.match(urlPattern) || []).leng
 const duplicateUrlCount = computed(() => Math.max(0, rawUrlCount.value - parsedUrls.value.length));
 const inputIssues = computed(() => collectInputIssues(urlInput.value));
 const canAnalyze = computed(() => parsedUrls.value.length > 0 && !analyzing.value);
+const isVip = computed(() => Boolean(authUser.value?.is_vip));
+
+async function loadAuth() {
+  authChecking.value = true;
+  try {
+    const response = await fetch("/api/auth/me", { credentials: "include" });
+    if (response.ok) {
+      const payload = await response.json();
+      authUser.value = payload.user || null;
+    }
+  } finally {
+    authChecking.value = false;
+  }
+}
+
+function openAuthModal(mode: "login" | "register" = "login") {
+  authMode.value = mode;
+  authError.value = "";
+  authModalOpen.value = true;
+}
+
+async function submitAuth() {
+  if (!authEmail.value.trim() || !authPassword.value) return;
+  authSubmitting.value = true;
+  authError.value = "";
+  try {
+    const response = await fetch(`/api/auth/${authMode.value}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ email: authEmail.value.trim(), password: authPassword.value }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || "登录失败");
+    authUser.value = payload.user;
+    authModalOpen.value = false;
+    authPassword.value = "";
+    showToast(authMode.value === "register" ? "注册成功" : "登录成功");
+  } catch (error) {
+    authError.value = error instanceof Error ? error.message : "登录失败";
+  } finally {
+    authSubmitting.value = false;
+  }
+}
+
+async function logout() {
+  await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+  authUser.value = null;
+  resetSummaryState();
+  showToast("已退出登录");
+}
+
+function scrollToPricing() {
+  document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function promptVipForAi() {
+  if (!authUser.value) {
+    openAuthModal("login");
+    showToast("请先登录后开通 VIP");
+    return;
+  }
+  scrollToPricing();
+  showToast("AI 总结为 VIP 专享功能");
+}
+
+async function startVipCheckout() {
+  if (!authUser.value) {
+    openAuthModal("login");
+    return;
+  }
+  if (authUser.value.is_vip) {
+    showToast("你已经是 VIP");
+    return;
+  }
+  billingLoading.value = true;
+  try {
+    const response = await fetch("/api/billing/create-checkout-session", {
+      method: "POST",
+      credentials: "include",
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || "创建支付会话失败");
+    if (payload.is_vip) {
+      await loadAuth();
+      showToast("VIP 已生效");
+      return;
+    }
+    if (payload.checkout_url) {
+      window.location.href = payload.checkout_url;
+      return;
+    }
+    showToast("支付会话已创建，请稍后重试");
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : "创建支付会话失败");
+  } finally {
+    billingLoading.value = false;
+  }
+}
+
+async function handleCheckoutReturn() {
+  const params = new URLSearchParams(window.location.search);
+  const checkout = params.get("checkout");
+  if (!checkout) return;
+  await loadAuth();
+  if (checkout === "success") {
+    showToast(authUser.value?.is_vip ? "VIP 已开通" : "支付已完成，正在等待 Stripe 回调确认");
+  } else if (checkout === "cancel") {
+    showToast("已取消支付");
+  }
+  window.history.replaceState({}, "", `${window.location.pathname}${window.location.hash || ""}`);
+}
+
 function collectInputIssues(text: string) {
   const tokens = text.split(/\s+/).map((token) => token.trim()).filter(Boolean);
   const issues: string[] = [];
@@ -473,12 +604,17 @@ function setSummaryTab(url: string, tab: "summary" | "transcript" | "mindmap" | 
 }
 
 async function autoCreateSummaries(items: AnalyzeItem[]) {
+  if (!isVip.value) return;
   const successfulItems = items.filter((item) => item.ok && item.video);
   await Promise.allSettled(successfulItems.map((item) => createSummary(item)));
 }
 
 async function createSummary(item: AnalyzeItem, force = false) {
   if (!item.video) return;
+  if (!isVip.value) {
+    promptVipForAi();
+    return;
+  }
   const existing = summaryForUrl(item.url);
   if (existing && !force) return;
   if (existing && force) {
@@ -488,6 +624,7 @@ async function createSummary(item: AnalyzeItem, force = false) {
   const response = await fetch("/api/summaries", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({
       url: item.url,
       language: summaryLanguage.value.trim() || "zh",
@@ -545,6 +682,7 @@ function startSummaryStream(summaryId: string) {
 
   fetch(`/api/summaries/${summaryId}/stream`, {
     signal: controller.signal,
+    credentials: "include",
   })
     .then(async (resp) => {
       if (!resp.ok) return;
@@ -640,6 +778,7 @@ async function askSummary(summary: SummaryStatus) {
     const response = await fetch(`/api/summaries/${summary.summary_id}/questions/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ question }),
     });
 
@@ -1020,6 +1159,10 @@ onBeforeUnmount(() => {
   }
 });
 
+onMounted(() => {
+  void loadAuth().then(handleCheckoutReturn);
+});
+
 const successfulResults = computed(() => results.value.filter((item) => item.ok && item.video));
 const failedResults = computed(() => results.value.filter((item) => !item.ok));
 
@@ -1094,12 +1237,33 @@ const summaryTabs = [
           <a href="#features" class="hover:text-[#ff5a5f]">功能</a>
           <a href="#how-to-use" class="hover:text-[#ff5a5f]">用法</a>
           <a href="#comparison" class="hover:text-[#ff5a5f]">对比</a>
+          <a href="#pricing" class="hover:text-[#ff5a5f]">套餐价格</a>
           <button type="button" class="hover:text-[#ff5a5f]" @click="openInfoDrawer('platforms')">支持平台</button>
         </div>
-        <button type="button" class="inline-flex items-center gap-2 rounded-full bg-[#ff5a5f] px-4 py-2 text-sm font-bold text-white shadow-sm shadow-[#ff5a5f]/30 hover:bg-[#ef4444]" @click="openInfoDrawer('download')">
-          <HelpCircle class="h-4 w-4" />
-          帮助
-        </button>
+        <div class="flex items-center gap-2">
+          <template v-if="authUser">
+            <button
+              type="button"
+              class="hidden items-center gap-2 rounded-full border border-[#dbeafe] bg-blue-50 px-3 py-2 text-xs font-black text-blue-700 sm:inline-flex"
+              @click="authUser.is_vip ? showToast('VIP 已生效') : scrollToPricing()"
+            >
+              <Sparkles class="h-3.5 w-3.5" />
+              {{ authUser.is_vip ? "VIP 已开通" : "免费用户" }}
+            </button>
+            <button type="button" class="hidden items-center gap-2 rounded-full border border-[#f2ded3] bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-[#fff1ed] sm:inline-flex" @click="logout">
+              <LogOut class="h-3.5 w-3.5" />
+              退出
+            </button>
+          </template>
+          <button v-else type="button" class="hidden items-center gap-2 rounded-full border border-[#f2ded3] bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-[#fff1ed] sm:inline-flex" @click="openAuthModal('login')">
+            <User class="h-3.5 w-3.5" />
+            登录
+          </button>
+          <button type="button" class="inline-flex items-center gap-2 rounded-full bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700 shadow-sm hover:bg-blue-100" @click="authUser?.is_vip ? showToast('VIP 已生效') : startVipCheckout()">
+            <Sparkles class="h-4 w-4" />
+            {{ billingLoading ? "处理中..." : "开通 VIP" }}
+          </button>
+        </div>
       </nav>
     </header>
 
@@ -1217,6 +1381,67 @@ const summaryTabs = [
         </div>
       </section>
 
+      <section id="pricing" class="border-b border-[#f2ded3] bg-white">
+        <div class="mx-auto max-w-5xl px-4 py-14 sm:px-6 lg:px-8">
+          <div class="text-center">
+            <h2 class="text-3xl font-black text-slate-950 sm:text-4xl">选择适合你的视频下载方案</h2>
+            <p class="mt-4 text-sm leading-7 text-slate-500">免费版满足日常公开视频下载，VIP 解锁 AI 总结、思维导图和视频问答</p>
+          </div>
+
+          <div class="mt-10 grid gap-6 md:grid-cols-2">
+            <article class="flex min-h-[420px] flex-col rounded-[22px] border border-[#e5e7eb] bg-white p-8 shadow-sm">
+              <div>
+                <h3 class="text-xl font-black text-slate-950">免费版</h3>
+                <p class="mt-2 text-sm font-medium text-slate-500">满足基础下载需求</p>
+                <p class="mt-8 flex items-end gap-2 text-4xl font-black text-slate-950">
+                  ¥0 <span class="pb-1 text-sm font-bold text-slate-400">/永久</span>
+                </p>
+              </div>
+              <ul class="mt-8 space-y-4 text-sm font-semibold text-slate-500">
+                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-emerald-500" />公开视频解析</li>
+                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-emerald-500" />直链下载与云端处理下载</li>
+                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-emerald-500" />多清晰度格式选择</li>
+                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-emerald-500" />基础视频信息解析</li>
+              </ul>
+              <button type="button" class="mt-auto rounded-full border border-[#e5e7eb] px-5 py-3 text-sm font-black text-slate-700" disabled>
+                当前方案
+              </button>
+            </article>
+
+            <article class="relative flex min-h-[420px] flex-col overflow-hidden rounded-[22px] bg-[#2f6df6] p-8 text-white shadow-xl shadow-blue-500/25">
+              <div class="absolute -right-16 -top-16 h-48 w-48 rounded-full bg-white/10"></div>
+              <div class="relative">
+                <div class="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 class="text-xl font-black">VIP 高级版</h3>
+                    <p class="mt-2 text-sm font-medium text-blue-100">AI 学习整理能力，无限使用</p>
+                  </div>
+                  <span class="rounded-full bg-white/15 px-3 py-1 text-xs font-black text-blue-50">推荐</span>
+                </div>
+                <p class="mt-8 flex items-end gap-2 text-4xl font-black">
+                  ¥9.9 <span class="pb-1 text-sm font-bold text-blue-100">永久</span>
+                </p>
+              </div>
+              <ul class="relative mt-8 space-y-4 text-sm font-semibold text-blue-50">
+                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-yellow-300" />AI 视频内容总结</li>
+                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-yellow-300" />章节大纲与核心要点</li>
+                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-yellow-300" />字幕整理与 TXT / SRT 导出</li>
+                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-yellow-300" />思维导图生成与导出</li>
+                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-yellow-300" />基于视频内容的 AI 问答</li>
+              </ul>
+              <button
+                type="button"
+                class="relative mt-auto rounded-full bg-white px-5 py-3 text-sm font-black text-[#2f6df6] shadow-lg transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-70"
+                :disabled="billingLoading || Boolean(authUser?.is_vip)"
+                @click="startVipCheckout"
+              >
+                {{ authUser?.is_vip ? "已开通 VIP" : billingLoading ? "正在创建支付..." : "立即开通 VIP" }}
+              </button>
+            </article>
+          </div>
+        </div>
+      </section>
+
       <section v-if="results.length" id="results" class="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <div class="mb-4 flex items-center gap-2 text-sm font-bold text-[#ff5a5f]">
           <CheckCircle2 class="h-4 w-4" />
@@ -1263,7 +1488,24 @@ const summaryTabs = [
                 <h3 class="mt-3 line-clamp-3 text-xl font-black leading-8 text-slate-800">{{ item.video?.title }}</h3>
                 <p class="mt-2 break-all text-xs leading-5 text-slate-400">{{ item.url }}</p>
 
-                <div class="mt-5 rounded-2xl border border-[#f2ded3] bg-[#fff8f3] p-4">
+                <div v-if="!isVip" class="mt-5 rounded-2xl border border-blue-200 bg-blue-50 p-4">
+                  <p class="inline-flex items-center gap-1.5 text-xs font-black text-blue-700">
+                    <Sparkles class="h-3.5 w-3.5" />
+                    VIP 专享
+                  </p>
+                  <h4 class="mt-2 text-base font-black text-slate-900">开通后生成 AI 总结</h4>
+                  <p class="mt-2 text-xs leading-5 text-slate-600">解锁摘要、章节大纲、字幕整理、思维导图和视频问答。下载功能仍可免费使用。</p>
+                  <button
+                    type="button"
+                    class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#2f6df6] px-4 py-2.5 text-sm font-black text-white hover:bg-blue-700"
+                    @click="authUser ? startVipCheckout() : openAuthModal('login')"
+                  >
+                    <Sparkles class="h-4 w-4" />
+                    {{ authUser ? "开通 VIP" : "登录后开通" }}
+                  </button>
+                </div>
+
+                <div v-else class="mt-5 rounded-2xl border border-[#f2ded3] bg-[#fff8f3] p-4">
                   <div class="flex items-center justify-between gap-3">
                     <div>
                       <p class="inline-flex items-center gap-1.5 text-xs font-bold text-rose-600">
@@ -1413,7 +1655,24 @@ const summaryTabs = [
                   </button>
                 </div>
 
-                <div v-if="!summaryForUrl(item.url)" class="flex min-h-[360px] flex-1 items-center justify-center rounded-2xl border border-dashed border-[#cbd5e1] bg-white">
+                <div v-if="!isVip" class="flex min-h-[360px] flex-1 items-center justify-center rounded-2xl border border-dashed border-blue-200 bg-white p-6">
+                  <div class="max-w-md text-center">
+                    <div class="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full bg-blue-50 text-[#2f6df6]">
+                      <Sparkles class="h-6 w-6" />
+                    </div>
+                    <h3 class="text-xl font-black text-slate-900">AI 总结为 VIP 专享</h3>
+                    <p class="mt-3 text-sm leading-7 text-slate-500">开通 VIP 后即可生成摘要、章节、字幕、思维导图和视频问答。视频下载功能不受影响。</p>
+                    <button
+                      type="button"
+                      class="mt-5 rounded-full bg-[#2f6df6] px-6 py-3 text-sm font-black text-white hover:bg-blue-700"
+                      @click="authUser ? startVipCheckout() : openAuthModal('login')"
+                    >
+                      {{ authUser ? "立即开通 VIP" : "登录后开通 VIP" }}
+                    </button>
+                  </div>
+                </div>
+
+                <div v-else-if="!summaryForUrl(item.url)" class="flex min-h-[360px] flex-1 items-center justify-center rounded-2xl border border-dashed border-[#cbd5e1] bg-white">
                   <div class="text-center">
                     <div class="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-[3px] border-slate-300 border-t-[#ff5a5f]"></div>
                     <p class="text-sm font-bold text-slate-500">正在启动自动总结...</p>
@@ -1736,6 +1995,68 @@ const summaryTabs = [
         </div>
       </section>
     </main>
+
+    <div v-if="authModalOpen" class="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 px-4 backdrop-blur-sm">
+      <section class="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <p class="inline-flex items-center gap-1.5 text-sm font-bold text-[#2f6df6]">
+              <User class="h-4 w-4" />
+              {{ authMode === "login" ? "登录账号" : "注册账号" }}
+            </p>
+            <h2 class="mt-2 text-2xl font-black text-slate-900">
+              {{ authMode === "login" ? "欢迎回来" : "创建你的账号" }}
+            </h2>
+          </div>
+          <button type="button" class="grid h-9 w-9 place-items-center rounded-full border border-[#f2ded3] text-slate-500 hover:bg-[#fff1ed]" @click="authModalOpen = false" aria-label="关闭">
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+
+        <form class="mt-6 space-y-4" @submit.prevent="submitAuth">
+          <label class="block text-sm font-bold text-slate-700">
+            邮箱
+            <input
+              v-model="authEmail"
+              type="email"
+              autocomplete="email"
+              class="mt-2 w-full rounded-2xl border border-[#f2ded3] bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-[#2f6df6] focus:ring-4 focus:ring-blue-500/10"
+              placeholder="you@example.com"
+            />
+          </label>
+          <label class="block text-sm font-bold text-slate-700">
+            密码
+            <input
+              v-model="authPassword"
+              type="password"
+              :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'"
+              class="mt-2 w-full rounded-2xl border border-[#f2ded3] bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-[#2f6df6] focus:ring-4 focus:ring-blue-500/10"
+              placeholder="至少 8 位"
+            />
+          </label>
+          <p v-if="authError" class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{{ authError }}</p>
+          <button
+            type="submit"
+            class="inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#2f6df6] px-5 py-3 text-sm font-black text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-200"
+            :disabled="authSubmitting"
+          >
+            <User class="h-4 w-4" />
+            {{ authSubmitting ? "处理中..." : authMode === "login" ? "登录" : "注册并登录" }}
+          </button>
+        </form>
+
+        <div class="mt-5 rounded-2xl bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-800">
+          VIP 会绑定到这个邮箱账号。请使用你之后还会继续使用的邮箱注册。
+        </div>
+        <button
+          type="button"
+          class="mt-4 w-full text-sm font-bold text-slate-500 hover:text-[#2f6df6]"
+          @click="authMode = authMode === 'login' ? 'register' : 'login'; authError = ''"
+        >
+          {{ authMode === "login" ? "没有账号？立即注册" : "已有账号？去登录" }}
+        </button>
+      </section>
+    </div>
 
     <div v-if="showComplianceModal" class="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 px-4 backdrop-blur-sm">
       <section class="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl">

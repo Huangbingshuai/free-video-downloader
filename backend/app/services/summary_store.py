@@ -12,6 +12,7 @@ from app.schemas import SummaryResult, SummaryStatus
 class SummaryJob:
     summary_id: str
     url: str
+    user_id: str | None = None
     status: str = "queued"
     progress: float = 0
     error: str | None = None
@@ -24,8 +25,8 @@ class SummaryStore:
         self._jobs: dict[str, SummaryJob] = {}
         self._lock = Lock()
 
-    def create(self, url: str) -> SummaryJob:
-        job = SummaryJob(summary_id=uuid4().hex, url=url)
+    def create(self, url: str, user_id: str | None = None) -> SummaryJob:
+        job = SummaryJob(summary_id=uuid4().hex, url=url, user_id=user_id)
         with self._lock:
             self._jobs[job.summary_id] = job
         return job
