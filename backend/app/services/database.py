@@ -41,6 +41,8 @@ def init_db() -> None:
                     id TEXT PRIMARY KEY,
                     email TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
+                    display_name TEXT,
+                    avatar_url TEXT,
                     is_vip INTEGER NOT NULL DEFAULT 0,
                     vip_activated_at TEXT,
                     stripe_customer_id TEXT,
@@ -63,6 +65,8 @@ def init_db() -> None:
                     stripe_price_id TEXT,
                     stripe_checkout_session_id TEXT UNIQUE,
                     stripe_payment_intent_id TEXT,
+                    amount_total INTEGER,
+                    currency TEXT,
                     status TEXT NOT NULL,
                     checkout_url TEXT,
                     expires_at INTEGER,
@@ -76,6 +80,16 @@ def init_db() -> None:
                     event_type TEXT NOT NULL,
                     processed_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS email_codes (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    purpose TEXT NOT NULL,
+                    used INTEGER NOT NULL DEFAULT 0,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             payment_columns = {
@@ -83,6 +97,17 @@ def init_db() -> None:
             }
             if "stripe_price_id" not in payment_columns:
                 conn.execute("ALTER TABLE payments ADD COLUMN stripe_price_id TEXT")
+            if "amount_total" not in payment_columns:
+                conn.execute("ALTER TABLE payments ADD COLUMN amount_total INTEGER")
+            if "currency" not in payment_columns:
+                conn.execute("ALTER TABLE payments ADD COLUMN currency TEXT")
+            user_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()
+            }
+            if "display_name" not in user_columns:
+                conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
+            if "avatar_url" not in user_columns:
+                conn.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT")
         _INITIALIZED_PATHS.add(path_key)
 
 

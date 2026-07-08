@@ -32,6 +32,8 @@ class UserRecord:
     id: str
     email: str
     password_hash: str
+    display_name: str | None
+    avatar_url: str | None
     is_vip: bool
     vip_activated_at: str | None
     stripe_customer_id: str | None
@@ -110,6 +112,8 @@ def _row_to_user(row: Row | None) -> UserRecord | None:
         id=str(row["id"]),
         email=str(row["email"]),
         password_hash=str(row["password_hash"]),
+        display_name=row["display_name"],
+        avatar_url=row["avatar_url"],
         is_vip=bool(row["is_vip"]),
         vip_activated_at=row["vip_activated_at"],
         stripe_customer_id=row["stripe_customer_id"],
@@ -122,14 +126,15 @@ def create_user(email: str, password: str) -> UserRecord:
     normalized = _normalize_email(email)
     user_id = uuid4().hex
     now = _now_iso()
+    default_name = normalized.split("@", 1)[0][:32] or "用户"
     try:
         with get_connection() as conn:
             conn.execute(
                 """
-                INSERT INTO users (id, email, password_hash, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, normalized, hash_password(password), now, now),
+                (user_id, normalized, hash_password(password), default_name, now, now),
             )
     except IntegrityError as exc:
         raise DuplicateEmail("该邮箱已注册") from exc
@@ -158,6 +163,36 @@ def authenticate_user(email: str, password: str) -> UserRecord | None:
     if not verify_password(password, user.password_hash):
         return None
     return user
+
+
+def update_profile(user_id: str, display_name: str | None) -> UserRecord | None:
+    cleaned_name = (display_name or "").strip()[:32] or None
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE users
+            SET display_name = COALESCE(?, display_name),
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (cleaned_name, _now_iso(), user_id),
+        )
+    return get_user_by_id(user_id)
+
+
+def update_avatar(user_id: str, avatar_url: str | None) -> UserRecord | None:
+    cleaned_avatar = (avatar_url or "").strip()[:500] or None
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE users
+            SET avatar_url = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (cleaned_avatar, _now_iso(), user_id),
+        )
+    return get_user_by_id(user_id)
 
 
 def create_session_token(user_id: str) -> str:

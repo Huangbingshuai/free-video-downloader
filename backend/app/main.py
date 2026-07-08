@@ -16,6 +16,7 @@ else:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.routes.auth import router as auth_router
 from app.routes.billing import router as billing_router
@@ -96,6 +97,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_uploads_root = Path(os.getenv("FVD_UPLOAD_DIR", Path(__file__).resolve().parent.parent / "uploads"))
+app.mount("/uploads", StaticFiles(directory=str(_uploads_root), check_dir=False), name="uploads")
 
 app.include_router(auth_router)
 app.include_router(billing_router)

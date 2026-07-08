@@ -155,25 +155,38 @@ class AskSummaryResponse(BaseModel):
     references: list[AnswerReference] = Field(default_factory=list)
 
 
+class SendCodeRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    purpose: Literal["register", "login"] = "register"
+
+
 class RegisterRequest(BaseModel):
     email: str = Field(..., min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     password: str = Field(..., min_length=8, max_length=128)
+    code: str = Field(..., min_length=6, max_length=6)
 
 
 class LoginRequest(BaseModel):
     email: str = Field(..., min_length=3, max_length=254)
-    password: str = Field(..., min_length=1, max_length=128)
+    password: str | None = Field(default=None, min_length=1, max_length=128)
+    code: str | None = Field(default=None, min_length=6, max_length=6)
 
 
 class AuthUser(BaseModel):
     id: str
     email: str
+    display_name: str | None = None
+    avatar_url: str | None = None
     is_vip: bool = False
     vip_activated_at: str | None = None
 
 
 class AuthResponse(BaseModel):
     user: AuthUser | None = None
+
+
+class UpdateProfileRequest(BaseModel):
+    display_name: str | None = Field(default=None, max_length=32)
 
 
 class MembershipStatus(BaseModel):
@@ -192,3 +205,18 @@ class CheckoutSessionResponse(BaseModel):
 
 class ConfirmCheckoutSessionRequest(BaseModel):
     session_id: str = Field(..., min_length=8, max_length=255)
+
+
+class PaymentRecord(BaseModel):
+    id: str
+    status: str
+    amount_total: int | None = None
+    currency: str | None = None
+    stripe_checkout_session_id: str | None = None
+    stripe_payment_intent_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class PaymentHistoryResponse(BaseModel):
+    payments: list[PaymentRecord] = Field(default_factory=list)

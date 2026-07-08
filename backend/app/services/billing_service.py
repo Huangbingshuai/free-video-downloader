@@ -81,6 +81,8 @@ class BillingService:
                 session_id=session_id,
                 checkout_url=f"{_app_url()}/?checkout=success&mock=1&session_id={session_id}#pricing",
                 expires_at=_now_ts() + 30 * 60,
+                amount_total=990,
+                currency="cny",
             )
             self._mark_payment_paid(session_id, f"pi_mock_{payment_id}")
             activate_vip(user.id, stripe_customer_id=f"cus_mock_{user.id[:12]}")
@@ -100,6 +102,8 @@ class BillingService:
             session_id=session_id,
             checkout_url=checkout_url,
             expires_at=int(expires_at) if expires_at else None,
+            amount_total=_stripe_value(session, "amount_total"),
+            currency=_stripe_value(session, "currency"),
         )
         return CheckoutSessionResponse(
             status="pending",
@@ -132,6 +136,11 @@ class BillingService:
         if payment_status == "paid":
             payment_intent = _stripe_value(session, "payment_intent")
             customer = _stripe_value(session, "customer")
+            self._update_payment_amount(
+                session_id,
+                _stripe_value(session, "amount_total"),
+                _stripe_value(session, "currency"),
+            )
             self._mark_payment_paid(session_id, str(payment_intent) if payment_intent else None)
             activate_vip(user.id, stripe_customer_id=str(customer) if customer else None)
             return CheckoutSessionResponse(status="paid", session_id=session_id, is_vip=True)
@@ -282,8 +291,24 @@ class BillingService:
         payment_intent = session.get("payment_intent")
         customer = session.get("customer")
         if session_id:
+            self._update_payment_amount(session_id, session.get("amount_total"), session.get("currency"))
             self._mark_payment_paid(session_id, str(payment_intent) if payment_intent else None)
         activate_vip(str(user_id), stripe_customer_id=str(customer) if customer else None)
+
+    def list_user_payments(self, user_id: str) -> list[dict[str, Any]]:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, status, amount_total, currency, stripe_checkout_session_id,
+                       stripe_payment_intent_id, created_at, updated_at
+                FROM payments
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 50
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def _find_active_pending_payment(self, user_id: str, price_config: str):
         with get_connection() as conn:
@@ -318,15 +343,50 @@ class BillingService:
         session_id: str,
         checkout_url: str,
         expires_at: int | None,
+        amount_total: Any = None,
+        currency: Any = None,
     ) -> None:
         with get_connection() as conn:
             conn.execute(
                 """
                 UPDATE payments
-                SET stripe_checkout_session_id = ?, checkout_url = ?, expires_at = ?, updated_at = ?
+                SET stripe_checkout_session_id = ?,
+                    checkout_url = ?,
+                    expires_at = ?,
+                    amount_total = COALESCE(?, amount_total),
+                    currency = COALESCE(?, currency),
+                    updated_at = ?
                 WHERE id = ?
                 """,
-                (session_id, checkout_url, expires_at, _now_iso(), payment_id),
+                (
+                    session_id,
+                    checkout_url,
+                    expires_at,
+                    int(amount_total) if amount_total is not None else None,
+                    str(currency).lower() if currency else None,
+                    _now_iso(),
+                    payment_id,
+                ),
+            )
+
+    def _update_payment_amount(self, session_id: str, amount_total: Any, currency: Any) -> None:
+        if amount_total is None and not currency:
+            return
+        with get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE payments
+                SET amount_total = COALESCE(?, amount_total),
+                    currency = COALESCE(?, currency),
+                    updated_at = ?
+                WHERE stripe_checkout_session_id = ?
+                """,
+                (
+                    int(amount_total) if amount_total is not None else None,
+                    str(currency).lower() if currency else None,
+                    _now_iso(),
+                    session_id,
+                ),
             )
 
     def _mark_payment_paid(self, session_id: str, payment_intent: str | None) -> None:

@@ -4,7 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.dependencies import get_current_user, get_optional_user
 from app.routes.auth import _public_user
-from app.schemas import CheckoutSessionResponse, ConfirmCheckoutSessionRequest, MembershipStatus
+from app.schemas import (
+    CheckoutSessionResponse,
+    ConfirmCheckoutSessionRequest,
+    MembershipStatus,
+    PaymentHistoryResponse,
+    PaymentRecord,
+)
 from app.services.auth_service import UserRecord
 from app.services.billing_service import (
     BillingError,
@@ -47,6 +53,12 @@ def confirm_checkout_session(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except BillingError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get("/billing/payments", response_model=PaymentHistoryResponse)
+def payment_history(user: UserRecord = Depends(get_current_user)) -> PaymentHistoryResponse:
+    rows = billing_service.list_user_payments(user.id)
+    return PaymentHistoryResponse(payments=[PaymentRecord(**row) for row in rows])
 
 
 @router.post("/billing/webhook")

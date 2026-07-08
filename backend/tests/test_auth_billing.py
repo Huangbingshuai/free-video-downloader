@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +17,7 @@ from app.services.auth_service import activate_vip
 @pytest.fixture(autouse=True)
 def isolated_db(monkeypatch, tmp_path):
     monkeypatch.setenv("FVD_DB_PATH", str(tmp_path / "app.sqlite3"))
+    monkeypatch.setenv("FVD_UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.setenv("AUTH_SECRET_KEY", "test-auth-secret-with-at-least-32-bytes")
     yield
 
@@ -49,6 +51,44 @@ def test_register_login_logout_flow():
         login = client.post("/api/auth/login", json={"email": "flow@example.com", "password": "password123"})
         assert login.status_code == 200
         assert client.get("/api/auth/me").json()["user"]["email"] == "flow@example.com"
+
+
+def test_update_profile_flow():
+    with TestClient(app) as client:
+        _register(client, "profile@example.com")
+        response = client.put(
+            "/api/auth/profile",
+            json={"display_name": "影知用户"},
+        )
+        me = client.get("/api/auth/me")
+
+    assert response.status_code == 200
+    assert response.json()["user"]["display_name"] == "影知用户"
+    assert me.json()["user"]["display_name"] == "影知用户"
+
+
+def test_upload_avatar_flow(monkeypatch, tmp_path):
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setenv("FVD_UPLOAD_DIR", str(upload_dir))
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+    with TestClient(app) as client:
+        _register(client, "avatar@example.com")
+        response = client.post(
+            "/api/auth/avatar",
+            files={"file": ("avatar.png", png_bytes, "image/png")},
+        )
+
+    assert response.status_code == 200
+    avatar_url = response.json()["user"]["avatar_url"]
+    assert avatar_url.startswith("/uploads/avatars/")
+    assert (Path(upload_dir) / "avatars" / avatar_url.rsplit("/", 1)[-1]).is_file()
 
 
 def test_create_checkout_session_reuses_pending_payment(monkeypatch):
@@ -166,6 +206,53 @@ def test_confirm_checkout_session_activates_vip(monkeypatch):
     assert confirm.status_code == 200
     assert confirm.json()["is_vip"] is True
     assert status.json()["is_vip"] is True
+
+
+def test_payment_history_records_paid_checkout(monkeypatch):
+    monkeypatch.setenv("STRIPE_API_KEY", "sk_test_mock")
+    monkeypatch.setenv("STRIPE_VIP_PRICE_ID", "price_mock")
+    monkeypatch.setenv("STRIPE_MOCK_MODE", "false")
+
+    def fake_create(payment_id, user):
+        return {
+            "id": "cs_test_history_paid",
+            "url": "https://checkout.stripe.test/history",
+            "expires_at": int(time.time()) + 3600,
+            "amount_total": 990,
+            "currency": "cny",
+        }
+
+    def fake_retrieve(session_id):
+        return {
+            "id": session_id,
+            "mode": "payment",
+            "payment_status": "paid",
+            "payment_intent": "pi_history_paid",
+            "customer": "cus_history_paid",
+            "client_reference_id": None,
+            "amount_total": 990,
+            "currency": "cny",
+            "metadata": {"user_id": user_id, "purchase_type": "vip_lifetime"},
+        }
+
+    monkeypatch.setattr(billing.billing_service, "_create_stripe_checkout_session", fake_create)
+
+    with TestClient(app) as client:
+        auth = _register(client, "payment-history@example.com")
+        user_id = auth.json()["user"]["id"]
+        checkout = client.post("/api/billing/create-checkout-session")
+        monkeypatch.setattr(billing.billing_service, "_retrieve_stripe_checkout_session", fake_retrieve)
+        confirm = client.post(
+            "/api/billing/confirm-checkout-session",
+            json={"session_id": checkout.json()["session_id"]},
+        )
+        history = client.get("/api/billing/payments")
+
+    assert confirm.status_code == 200
+    assert history.status_code == 200
+    assert history.json()["payments"][0]["status"] == "paid"
+    assert history.json()["payments"][0]["amount_total"] == 990
+    assert history.json()["payments"][0]["currency"] == "cny"
 
 
 def test_confirm_checkout_session_rejects_wrong_user(monkeypatch):

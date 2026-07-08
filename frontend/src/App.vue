@@ -8,6 +8,7 @@ import {
   Clipboard,
   Cloud,
   Copy,
+  CreditCard,
   Download,
   FileText,
   Globe2,
@@ -18,6 +19,7 @@ import {
   Play,
   RefreshCw,
   Search,
+  Settings,
   ShieldCheck,
   Sparkles,
   LogOut,
@@ -109,8 +111,21 @@ type SummaryStatus = {
 type AuthUser = {
   id: string;
   email: string;
+  display_name?: string | null;
+  avatar_url?: string | null;
   is_vip: boolean;
   vip_activated_at?: string | null;
+};
+
+type PaymentRecord = {
+  id: string;
+  status: string;
+  amount_total?: number | null;
+  currency?: string | null;
+  stripe_checkout_session_id?: string | null;
+  stripe_payment_intent_id?: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 type QuestionAnswer = {
@@ -120,6 +135,7 @@ type QuestionAnswer = {
 };
 
 type DrawerTab = "platforms" | "download" | "compliance";
+type ToastTone = "info" | "success" | "error";
 type IconCard = {
   title: string;
   text: string;
@@ -150,6 +166,7 @@ const lastQuestionText = reactive<Record<string, string>>({});
 const streamingText = reactive<Record<string, string>>({});
 const streamingQA = reactive<Record<string, string>>({});
 const toastMessage = ref("");
+const toastTone = ref<ToastTone>("info");
 const showComplianceModal = ref(false);
 const complianceAccepted = ref(localStorage.getItem("fvd_compliance_ok") === "1");
 const complianceChecked = ref(false);
@@ -161,15 +178,30 @@ const authModalOpen = ref(false);
 const authMode = ref<"login" | "register">("login");
 const authEmail = ref("");
 const authPassword = ref("");
+const authCode = ref("");
+const authUseCode = ref(false);
+const codeSending = ref(false);
+const codeCountdown = ref(0);
 const authError = ref("");
 const authSubmitting = ref(false);
+let codeTimer: number | undefined;
 const billingLoading = ref(false);
+const userMenuOpen = ref(false);
+const profileModalOpen = ref(false);
+const profileName = ref("");
+const profileAvatarFile = ref<File | null>(null);
+const profileAvatarPreview = ref("");
+const profileSaving = ref(false);
+const profileError = ref("");
+const paymentHistory = ref<PaymentRecord[]>([]);
+const paymentsLoading = ref(false);
 let toastTimer: number | undefined;
 
-function showToast(msg: string) {
+function showToast(msg: string, tone: ToastTone = "info") {
   toastMessage.value = msg;
+  toastTone.value = tone;
   if (toastTimer) window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => { toastMessage.value = ""; }, 2000);
+  toastTimer = window.setTimeout(() => { toastMessage.value = ""; }, 2600);
 }
 
 function isSummaryLoading(url: string) {
@@ -200,6 +232,21 @@ const duplicateUrlCount = computed(() => Math.max(0, rawUrlCount.value - parsedU
 const inputIssues = computed(() => collectInputIssues(urlInput.value));
 const canAnalyze = computed(() => parsedUrls.value.length > 0 && !analyzing.value);
 const isVip = computed(() => Boolean(authUser.value?.is_vip));
+const toastClass = computed(() => {
+  if (toastTone.value === "success") {
+    return "border-emerald-400/40 bg-emerald-500/95 text-white shadow-emerald-500/20";
+  }
+  if (toastTone.value === "error") {
+    return "border-rose-400/40 bg-rose-500/95 text-white shadow-rose-500/20";
+  }
+  return "border-slate-900/10 bg-slate-900/90 text-white shadow-slate-900/20";
+});
+
+const profileDisplayName = computed(() =>
+  authUser.value?.display_name?.trim() || authUser.value?.email?.split("@")[0] || "用户",
+);
+
+const profileAvatarSrc = computed(() => profileAvatarPreview.value || authUser.value?.avatar_url || "");
 
 async function loadAuth() {
   authChecking.value = true;
@@ -214,31 +261,209 @@ async function loadAuth() {
   }
 }
 
+async function loadPaymentHistory() {
+  if (!authUser.value) return;
+  paymentsLoading.value = true;
+  try {
+    const response = await fetch("/api/billing/payments", { credentials: "include" });
+    const payload = await response.json().catch(() => ({}));
+    if (response.ok) paymentHistory.value = payload.payments || [];
+  } finally {
+    paymentsLoading.value = false;
+  }
+}
+
+function openProfileModal() {
+  if (!authUser.value) return;
+  profileName.value = authUser.value.display_name || authUser.value.email.split("@")[0] || "";
+  profileAvatarFile.value = null;
+  profileAvatarPreview.value = "";
+  profileError.value = "";
+  profileModalOpen.value = true;
+  userMenuOpen.value = false;
+  void loadPaymentHistory();
+}
+
+function onAvatarFileChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0] || null;
+  if (profileAvatarPreview.value) {
+    URL.revokeObjectURL(profileAvatarPreview.value);
+    profileAvatarPreview.value = "";
+  }
+  profileAvatarFile.value = null;
+  if (!file) return;
+  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+    profileError.value = "头像仅支持 JPG、PNG 或 WEBP";
+    input.value = "";
+    return;
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    profileError.value = "头像不能超过 2MB";
+    input.value = "";
+    return;
+  }
+  profileError.value = "";
+  profileAvatarFile.value = file;
+  profileAvatarPreview.value = URL.createObjectURL(file);
+}
+
+async function saveProfile() {
+  profileSaving.value = true;
+  profileError.value = "";
+  try {
+    const response = await fetch("/api/auth/profile", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        display_name: profileName.value.trim(),
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || "保存失败");
+    authUser.value = payload.user;
+    if (profileAvatarFile.value) {
+      const formData = new FormData();
+      formData.append("file", profileAvatarFile.value);
+      const avatarResponse = await fetch("/api/auth/avatar", {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
+      const avatarPayload = await avatarResponse.json().catch(() => ({}));
+      if (!avatarResponse.ok) throw new Error(avatarPayload.detail || "头像上传失败");
+      authUser.value = avatarPayload.user;
+      profileAvatarFile.value = null;
+      if (profileAvatarPreview.value) {
+        URL.revokeObjectURL(profileAvatarPreview.value);
+        profileAvatarPreview.value = "";
+      }
+    }
+    profileModalOpen.value = false;
+    showToast("个人资料已更新", "success");
+  } catch (error) {
+    profileError.value = error instanceof Error ? error.message : "保存失败";
+    showToast(profileError.value, "error");
+  } finally {
+    profileSaving.value = false;
+  }
+}
+
+function paymentStatusLabel(status: string) {
+  const map: Record<string, string> = {
+    paid: "支付成功",
+    pending: "待支付",
+    failed: "支付失败",
+    expired: "已过期",
+  };
+  return map[status] || status;
+}
+
+function paymentStatusClass(status: string) {
+  if (status === "paid") return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  if (status === "failed" || status === "expired") return "bg-rose-50 text-rose-700 border-rose-200";
+  return "bg-amber-50 text-amber-700 border-amber-200";
+}
+
+function formatPaymentAmount(payment: PaymentRecord) {
+  if (payment.amount_total === null || payment.amount_total === undefined) return "金额待确认";
+  const currency = (payment.currency || "cny").toUpperCase();
+  const amount = (payment.amount_total / 100).toFixed(2);
+  return currency === "CNY" ? `¥${amount}` : `${amount} ${currency}`;
+}
+
+function formatPaymentTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function shortPaymentId(payment: PaymentRecord) {
+  const id = payment.stripe_checkout_session_id || payment.stripe_payment_intent_id || payment.id;
+  return id.length > 18 ? `${id.slice(0, 10)}...${id.slice(-6)}` : id;
+}
+
 function openAuthModal(mode: "login" | "register" = "login") {
   authMode.value = mode;
   authError.value = "";
+  authCode.value = "";
+  authUseCode.value = false;
+  codeSending.value = false;
+  codeCountdown.value = 0;
+  if (codeTimer) { clearInterval(codeTimer); codeTimer = undefined; }
   authModalOpen.value = true;
 }
 
+async function sendAuthCode() {
+  const email = authEmail.value.trim();
+  if (!email) return;
+  codeSending.value = true;
+  authError.value = "";
+  try {
+    const response = await fetch("/api/auth/send-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ email, purpose: authMode.value }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || "发送失败");
+    codeCountdown.value = 60;
+    codeTimer = window.setInterval(() => {
+      codeCountdown.value--;
+      if (codeCountdown.value <= 0 && codeTimer) { clearInterval(codeTimer); codeTimer = undefined; }
+    }, 1000);
+    showToast("验证码已发送", "success");
+  } catch (error) {
+    authError.value = error instanceof Error ? error.message : "发送失败";
+  } finally {
+    codeSending.value = false;
+  }
+}
+
 async function submitAuth() {
-  if (!authEmail.value.trim() || !authPassword.value) return;
+  const email = authEmail.value.trim();
+  if (!email) return;
+  if (authMode.value === "register") {
+    if (!authPassword.value || !authCode.value) return;
+  } else if (authUseCode.value) {
+    if (!authCode.value) return;
+  } else {
+    if (!authPassword.value) return;
+  }
   authSubmitting.value = true;
   authError.value = "";
   try {
+    const body: Record<string, string> = { email };
+    if (authMode.value === "register") {
+      body.password = authPassword.value;
+      body.code = authCode.value;
+    } else if (authUseCode.value) {
+      body.code = authCode.value;
+    } else {
+      body.password = authPassword.value;
+    }
     const response = await fetch(`/api/auth/${authMode.value}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ email: authEmail.value.trim(), password: authPassword.value }),
+      body: JSON.stringify(body),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.detail || "登录失败");
+    if (!response.ok) throw new Error(payload.detail || "操作失败");
     authUser.value = payload.user;
     authModalOpen.value = false;
     authPassword.value = "";
-    showToast(authMode.value === "register" ? "注册成功" : "登录成功");
+    authCode.value = "";
+    showToast(authMode.value === "register" ? "注册成功" : "登录成功", "success");
   } catch (error) {
-    authError.value = error instanceof Error ? error.message : "登录失败";
+    authError.value = error instanceof Error ? error.message : "操作失败";
   } finally {
     authSubmitting.value = false;
   }
@@ -247,6 +472,8 @@ async function submitAuth() {
 async function logout() {
   await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
   authUser.value = null;
+  userMenuOpen.value = false;
+  profileModalOpen.value = false;
   resetSummaryState();
   showToast("已退出登录");
 }
@@ -284,7 +511,8 @@ async function startVipCheckout() {
     if (!response.ok) throw new Error(payload.detail || "创建支付会话失败");
     if (payload.is_vip) {
       await loadAuth();
-      showToast("VIP 已生效");
+      await loadPaymentHistory();
+      showToast("VIP 已生效", "success");
       return;
     }
     if (payload.checkout_url) {
@@ -293,7 +521,7 @@ async function startVipCheckout() {
     }
     showToast("支付会话已创建，请稍后重试");
   } catch (error) {
-    showToast(error instanceof Error ? error.message : "创建支付会话失败");
+    showToast(error instanceof Error ? error.message : "创建支付会话失败", "error");
   } finally {
     billingLoading.value = false;
   }
@@ -317,18 +545,24 @@ async function handleCheckoutReturn() {
         if (!response.ok) throw new Error(payload.detail || "支付确认失败");
         if (payload.is_vip) {
           await loadAuth();
-          showToast("支付成功，VIP 已开通");
+          await loadPaymentHistory();
+          showToast("支付成功，VIP 已开通", "success");
         } else {
           await loadAuth();
           showToast("支付已完成，正在等待 Stripe 最终确认");
         }
       } catch (error) {
         await loadAuth();
-        showToast(error instanceof Error ? error.message : "支付确认失败，请稍后刷新");
+        showToast(error instanceof Error ? error.message : "支付确认失败，请稍后刷新", "error");
       }
     } else {
       await loadAuth();
-      showToast(authUser.value?.is_vip ? "VIP 已开通" : "支付已完成，正在等待 Stripe 回调确认");
+      if (authUser.value?.is_vip) {
+        await loadPaymentHistory();
+        showToast("VIP 已开通", "success");
+      } else {
+        showToast("支付已完成，正在等待 Stripe 回调确认");
+      }
     }
   } else if (checkout === "cancel") {
     await loadAuth();
@@ -1182,6 +1416,9 @@ onBeforeUnmount(() => {
   for (const controller of summaryStreams.values()) {
     controller.abort();
   }
+  if (profileAvatarPreview.value) {
+    URL.revokeObjectURL(profileAvatarPreview.value);
+  }
 });
 
 onMounted(() => {
@@ -1268,33 +1505,75 @@ const summaryTabs = [
         <div class="flex items-center gap-2">
           <template v-if="authUser">
             <button
+              v-if="!authUser.is_vip"
               type="button"
-              class="hidden items-center gap-2 rounded-full border border-[#dbeafe] bg-blue-50 px-3 py-2 text-xs font-black text-blue-700 sm:inline-flex"
-              @click="authUser.is_vip ? showToast('VIP 已生效') : scrollToPricing()"
+              class="hidden items-center gap-2 rounded-full bg-[#ff5a5f] px-4 py-2 text-sm font-black text-white shadow-sm shadow-[#ff5a5f]/25 hover:bg-[#ef4444] sm:inline-flex"
+              :disabled="billingLoading"
+              @click="startVipCheckout"
             >
-              <Sparkles class="h-3.5 w-3.5" />
-              {{ authUser.is_vip ? "VIP 已开通" : "免费用户" }}
+              <Sparkles class="h-4 w-4" />
+              {{ billingLoading ? "处理中..." : "开通 VIP" }}
             </button>
-            <button type="button" class="hidden items-center gap-2 rounded-full border border-[#f2ded3] bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-[#fff1ed] sm:inline-flex" @click="logout">
-              <LogOut class="h-3.5 w-3.5" />
-              退出
+            <div class="relative">
+              <button
+                type="button"
+                class="inline-flex items-center gap-2 rounded-full border border-[#f2ded3] bg-white px-2 py-1.5 text-sm font-black text-slate-700 shadow-sm hover:bg-[#fff8f3]"
+                @click="userMenuOpen = !userMenuOpen"
+              >
+                <span class="grid h-8 w-8 place-items-center overflow-hidden rounded-full bg-[#fff1ed] text-[#ff5a5f]">
+                  <img v-if="authUser.avatar_url" :src="authUser.avatar_url" alt="用户头像" class="h-full w-full object-cover" />
+                  <User v-else class="h-4 w-4" />
+                </span>
+                <span class="hidden max-w-[96px] truncate sm:inline">{{ profileDisplayName }}</span>
+              </button>
+              <div v-if="userMenuOpen" class="absolute right-0 mt-3 w-72 rounded-2xl border border-[#f2ded3] bg-white p-3 text-sm shadow-2xl shadow-slate-900/10">
+                <div class="flex items-center gap-3 rounded-xl bg-[#fff8f3] p-3">
+                  <span class="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-full bg-white text-[#ff5a5f]">
+                    <img v-if="authUser.avatar_url" :src="authUser.avatar_url" alt="用户头像" class="h-full w-full object-cover" />
+                    <User v-else class="h-5 w-5" />
+                  </span>
+                  <div class="min-w-0">
+                    <p class="truncate font-black text-slate-900">{{ profileDisplayName }}</p>
+                    <p class="truncate text-xs font-semibold text-slate-500">{{ authUser.email }}</p>
+                  </div>
+                </div>
+                <div class="mt-3 flex items-center justify-between rounded-xl border px-3 py-2 text-xs font-black" :class="authUser.is_vip ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'">
+                  <span class="inline-flex items-center gap-1.5">
+                    <Sparkles class="h-3.5 w-3.5" />
+                    {{ authUser.is_vip ? "VIP 已开通" : "免费用户" }}
+                  </span>
+                  <button v-if="!authUser.is_vip" type="button" class="text-[#ff5a5f] hover:underline" @click="userMenuOpen = false; scrollToPricing()">升级</button>
+                </div>
+                <div class="mt-3 grid gap-2">
+                  <button type="button" class="inline-flex items-center gap-2 rounded-xl px-3 py-2 font-bold text-slate-700 hover:bg-[#fff8f3]" @click="openProfileModal">
+                    <Settings class="h-4 w-4 text-[#ff5a5f]" />
+                    个人中心
+                  </button>
+                  <button type="button" class="inline-flex items-center gap-2 rounded-xl px-3 py-2 font-bold text-slate-700 hover:bg-[#fff8f3]" @click="logout">
+                    <LogOut class="h-4 w-4 text-slate-500" />
+                    退出登录
+                  </button>
+                </div>
+              </div>
+            </div>
+          </template>
+          <template v-else>
+            <button type="button" class="hidden items-center gap-2 rounded-full border border-[#f2ded3] bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-[#fff1ed] sm:inline-flex" @click="openAuthModal('login')">
+              <User class="h-3.5 w-3.5" />
+              登录
+            </button>
+            <button type="button" class="inline-flex items-center gap-2 rounded-full bg-[#ff5a5f] px-4 py-2 text-sm font-black text-white shadow-sm shadow-[#ff5a5f]/25 hover:bg-[#ef4444]" @click="startVipCheckout">
+              <Sparkles class="h-4 w-4" />
+              开通 VIP
             </button>
           </template>
-          <button v-else type="button" class="hidden items-center gap-2 rounded-full border border-[#f2ded3] bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-[#fff1ed] sm:inline-flex" @click="openAuthModal('login')">
-            <User class="h-3.5 w-3.5" />
-            登录
-          </button>
-          <button type="button" class="inline-flex items-center gap-2 rounded-full bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700 shadow-sm hover:bg-blue-100" @click="authUser?.is_vip ? showToast('VIP 已生效') : startVipCheckout()">
-            <Sparkles class="h-4 w-4" />
-            {{ authUser?.is_vip ? "VIP 已开通" : billingLoading ? "处理中..." : "开通 VIP" }}
-          </button>
         </div>
       </nav>
     </header>
 
     <!-- 轻提示 Toast -->
     <Transition name="toast-fade">
-      <div v-if="toastMessage" class="fixed top-20 left-1/2 z-50 -translate-x-1/2 rounded-full border border-amber-400/30 bg-amber-500/90 px-5 py-3 text-sm font-bold text-white shadow-xl backdrop-blur">
+      <div v-if="toastMessage" class="fixed top-20 left-1/2 z-50 -translate-x-1/2 rounded-full border px-5 py-3 text-sm font-bold shadow-xl backdrop-blur" :class="toastClass">
         {{ toastMessage }}
       </div>
     </Transition>
@@ -1414,7 +1693,7 @@ const summaryTabs = [
           </div>
 
           <div class="mt-10 grid gap-6 md:grid-cols-2">
-            <article class="flex min-h-[420px] flex-col rounded-[22px] border border-[#e5e7eb] bg-white p-8 shadow-sm">
+            <article class="flex min-h-[420px] flex-col rounded-2xl border border-[#f2ded3] bg-white p-7 shadow-sm shadow-[#f1c7b8]/20">
               <div>
                 <h3 class="text-xl font-black text-slate-950">免费版</h3>
                 <p class="mt-2 text-sm font-medium text-slate-500">满足基础下载需求</p>
@@ -1422,41 +1701,50 @@ const summaryTabs = [
                   ¥0 <span class="pb-1 text-sm font-bold text-slate-400">/永久</span>
                 </p>
               </div>
-              <ul class="mt-8 space-y-4 text-sm font-semibold text-slate-500">
-                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-emerald-500" />公开视频解析</li>
-                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-emerald-500" />直链下载与云端处理下载</li>
-                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-emerald-500" />多清晰度格式选择</li>
-                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-emerald-500" />基础视频信息解析</li>
+              <ul class="mt-8 space-y-4 text-sm font-semibold leading-6 text-slate-500">
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />公开视频解析</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />直链下载与云端处理下载</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />多清晰度格式选择</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#14b8a6]" />基础视频信息解析</li>
               </ul>
-              <button type="button" class="mt-auto rounded-full border border-[#e5e7eb] px-5 py-3 text-sm font-black text-slate-700" disabled>
+              <button type="button" class="mt-auto rounded-full border border-[#f2ded3] bg-[#fff8f3] px-5 py-3 text-sm font-black text-slate-700" disabled>
                 当前方案
               </button>
             </article>
 
-            <article class="relative flex min-h-[420px] flex-col overflow-hidden rounded-[22px] bg-[#2f6df6] p-8 text-white shadow-xl shadow-blue-500/25">
-              <div class="absolute -right-16 -top-16 h-48 w-48 rounded-full bg-white/10"></div>
+            <article class="relative flex min-h-[420px] flex-col overflow-hidden rounded-2xl border border-[#ffc9bd] bg-[#fff8f3] p-7 text-slate-900 shadow-xl shadow-[#f1c7b8]/35">
+              <div class="absolute -right-20 -top-20 h-52 w-52 rounded-full bg-[#ff5a5f]/10"></div>
               <div class="relative">
                 <div class="flex items-start justify-between gap-4">
                   <div>
-                    <h3 class="text-xl font-black">VIP 高级版</h3>
-                    <p class="mt-2 text-sm font-medium text-blue-100">AI 学习整理能力，无限使用</p>
+                    <h3 class="text-xl font-black text-slate-950">VIP 高级版</h3>
+                    <p class="mt-2 text-sm font-medium leading-6 text-slate-500">
+                      AI 学习整理能力，永久解锁
+                    </p>
                   </div>
-                  <span class="rounded-full bg-white/15 px-3 py-1 text-xs font-black text-blue-50">推荐</span>
+                  <span class="rounded-full px-3 py-1 text-xs font-black" :class="authUser?.is_vip ? 'bg-emerald-50 text-emerald-700' : 'bg-[#ff5a5f] text-white'">
+                    {{ authUser?.is_vip ? "已开通" : "推荐" }}
+                  </span>
                 </div>
-                <p class="mt-8 flex items-end gap-2 text-4xl font-black">
-                  ¥9.9 <span class="pb-1 text-sm font-bold text-blue-100">永久</span>
+                <p class="mt-8 flex flex-wrap items-end gap-2 text-4xl font-black text-slate-950">
+                  ¥9.9 <span class="pb-1 text-sm font-bold text-[#ff5a5f]">永久</span>
+                </p>
+                <p v-if="authUser?.is_vip" class="mt-3 inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-700">
+                  <CheckCircle2 class="h-3.5 w-3.5" />
+                  AI 功能已解锁
                 </p>
               </div>
-              <ul class="relative mt-8 space-y-4 text-sm font-semibold text-blue-50">
-                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-yellow-300" />AI 视频内容总结</li>
-                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-yellow-300" />章节大纲与核心要点</li>
-                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-yellow-300" />字幕整理与 TXT / SRT 导出</li>
-                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-yellow-300" />思维导图生成与导出</li>
-                <li class="flex items-center gap-3"><CheckCircle2 class="h-4 w-4 text-yellow-300" />基于视频内容的 AI 问答</li>
+              <ul class="relative mt-8 space-y-4 text-sm font-semibold leading-6 text-slate-600">
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />AI 视频内容总结</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />章节大纲与核心要点</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />字幕整理与 TXT / SRT 导出</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />思维导图生成与导出</li>
+                <li class="flex items-start gap-3"><CheckCircle2 class="mt-0.5 h-4 w-4 shrink-0 text-[#ff5a5f]" />基于视频内容的 AI 问答</li>
               </ul>
               <button
                 type="button"
-                class="relative mt-auto rounded-full bg-white px-5 py-3 text-sm font-black text-[#2f6df6] shadow-lg transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-70"
+                class="relative mt-auto rounded-full px-5 py-3 text-sm font-black shadow-lg transition disabled:cursor-not-allowed"
+                :class="authUser?.is_vip ? 'border border-emerald-200 bg-emerald-50 text-emerald-700 shadow-emerald-500/10' : 'bg-[#ff5a5f] text-white shadow-[#ff5a5f]/25 hover:bg-[#ef4444]'"
                 :disabled="billingLoading || Boolean(authUser?.is_vip)"
                 @click="startVipCheckout"
               >
@@ -1513,8 +1801,8 @@ const summaryTabs = [
                 <h3 class="mt-3 line-clamp-3 text-xl font-black leading-8 text-slate-800">{{ item.video?.title }}</h3>
                 <p class="mt-2 break-all text-xs leading-5 text-slate-400">{{ item.url }}</p>
 
-                <div v-if="!isVip" class="mt-5 rounded-2xl border border-blue-200 bg-blue-50 p-4">
-                  <p class="inline-flex items-center gap-1.5 text-xs font-black text-blue-700">
+                <div v-if="!isVip" class="mt-5 rounded-2xl border border-[#ffc9bd] bg-[#fff8f3] p-4">
+                  <p class="inline-flex items-center gap-1.5 text-xs font-black text-[#ff5a5f]">
                     <Sparkles class="h-3.5 w-3.5" />
                     VIP 专享
                   </p>
@@ -1522,7 +1810,7 @@ const summaryTabs = [
                   <p class="mt-2 text-xs leading-5 text-slate-600">解锁摘要、章节大纲、字幕整理、思维导图和视频问答。下载功能仍可免费使用。</p>
                   <button
                     type="button"
-                    class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#2f6df6] px-4 py-2.5 text-sm font-black text-white hover:bg-blue-700"
+                    class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#ff5a5f] px-4 py-2.5 text-sm font-black text-white shadow-sm shadow-[#ff5a5f]/25 hover:bg-[#ef4444]"
                     @click="authUser ? startVipCheckout() : openAuthModal('login')"
                   >
                     <Sparkles class="h-4 w-4" />
@@ -1680,16 +1968,16 @@ const summaryTabs = [
                   </button>
                 </div>
 
-                <div v-if="!isVip" class="flex min-h-[360px] flex-1 items-center justify-center rounded-2xl border border-dashed border-blue-200 bg-white p-6">
+                <div v-if="!isVip" class="flex min-h-[360px] flex-1 items-center justify-center rounded-2xl border border-dashed border-[#ffc9bd] bg-white p-6">
                   <div class="max-w-md text-center">
-                    <div class="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full bg-blue-50 text-[#2f6df6]">
+                    <div class="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full bg-[#fff1ed] text-[#ff5a5f]">
                       <Sparkles class="h-6 w-6" />
                     </div>
                     <h3 class="text-xl font-black text-slate-900">AI 总结为 VIP 专享</h3>
                     <p class="mt-3 text-sm leading-7 text-slate-500">开通 VIP 后即可生成摘要、章节、字幕、思维导图和视频问答。视频下载功能不受影响。</p>
                     <button
                       type="button"
-                      class="mt-5 rounded-full bg-[#2f6df6] px-6 py-3 text-sm font-black text-white hover:bg-blue-700"
+                      class="mt-5 rounded-full bg-[#ff5a5f] px-6 py-3 text-sm font-black text-white shadow-sm shadow-[#ff5a5f]/25 hover:bg-[#ef4444]"
                       @click="authUser ? startVipCheckout() : openAuthModal('login')"
                     >
                       {{ authUser ? "立即开通 VIP" : "登录后开通 VIP" }}
@@ -2025,7 +2313,7 @@ const summaryTabs = [
       <section class="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
         <div class="flex items-start justify-between gap-4">
           <div>
-            <p class="inline-flex items-center gap-1.5 text-sm font-bold text-[#2f6df6]">
+            <p class="inline-flex items-center gap-1.5 text-sm font-bold text-[#ff5a5f]">
               <User class="h-4 w-4" />
               {{ authMode === "login" ? "登录账号" : "注册账号" }}
             </p>
@@ -2045,24 +2333,57 @@ const summaryTabs = [
               v-model="authEmail"
               type="email"
               autocomplete="email"
-              class="mt-2 w-full rounded-2xl border border-[#f2ded3] bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-[#2f6df6] focus:ring-4 focus:ring-blue-500/10"
+              class="mt-2 w-full rounded-2xl border border-[#f2ded3] bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-[#ff9f80] focus:ring-4 focus:ring-[#ff5a5f]/10"
               placeholder="you@example.com"
             />
           </label>
-          <label class="block text-sm font-bold text-slate-700">
+
+          <!-- 登录方式切换（仅登录模式） -->
+          <div v-if="authMode === 'login'" class="flex gap-2">
+            <button type="button" class="flex-1 rounded-full px-3 py-1.5 text-xs font-bold transition" :class="!authUseCode ? 'bg-[#ff5a5f] text-white' : 'bg-slate-100 text-slate-500'" @click="authUseCode = false">密码登录</button>
+            <button type="button" class="flex-1 rounded-full px-3 py-1.5 text-xs font-bold transition" :class="authUseCode ? 'bg-[#ff5a5f] text-white' : 'bg-slate-100 text-slate-500'" @click="authUseCode = true">验证码登录</button>
+          </div>
+
+          <!-- 密码（注册或密码登录时显示） -->
+          <label v-if="authMode === 'register' || !authUseCode" class="block text-sm font-bold text-slate-700">
             密码
             <input
               v-model="authPassword"
               type="password"
               :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'"
-              class="mt-2 w-full rounded-2xl border border-[#f2ded3] bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-[#2f6df6] focus:ring-4 focus:ring-blue-500/10"
+              class="mt-2 w-full rounded-2xl border border-[#f2ded3] bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-[#ff9f80] focus:ring-4 focus:ring-[#ff5a5f]/10"
               placeholder="至少 8 位"
             />
           </label>
+
+          <!-- 验证码（注册或验证码登录） -->
+          <label v-if="authMode === 'register' || authUseCode" class="block text-sm font-bold text-slate-700">
+            验证码
+            <div class="mt-2 flex gap-2">
+              <input
+                v-model="authCode"
+                type="text"
+                inputmode="numeric"
+                maxlength="6"
+                autocomplete="one-time-code"
+                class="flex-1 rounded-2xl border border-[#f2ded3] bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-[#ff9f80] focus:ring-4 focus:ring-[#ff5a5f]/10"
+                placeholder="6 位数字"
+              />
+              <button
+                type="button"
+                class="shrink-0 rounded-full bg-blue-500 px-4 py-3 text-xs font-bold text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                :disabled="codeSending || codeCountdown > 0 || !authEmail.trim()"
+                @click="sendAuthCode"
+              >
+                {{ codeCountdown > 0 ? `${codeCountdown}s` : codeSending ? "发送中..." : "发送验证码" }}
+              </button>
+            </div>
+          </label>
+
           <p v-if="authError" class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{{ authError }}</p>
           <button
             type="submit"
-            class="inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#2f6df6] px-5 py-3 text-sm font-black text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-200"
+            class="inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#ff5a5f] px-5 py-3 text-sm font-black text-white hover:bg-[#ef4444] disabled:cursor-not-allowed disabled:bg-slate-200"
             :disabled="authSubmitting"
           >
             <User class="h-4 w-4" />
@@ -2070,16 +2391,129 @@ const summaryTabs = [
           </button>
         </form>
 
-        <div class="mt-5 rounded-2xl bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-800">
+        <div class="mt-5 rounded-2xl bg-[#fff1ed] px-4 py-3 text-sm leading-6 text-[#b91c1c]">
           VIP 会绑定到这个邮箱账号。请使用你之后还会继续使用的邮箱注册。
         </div>
         <button
           type="button"
-          class="mt-4 w-full text-sm font-bold text-slate-500 hover:text-[#2f6df6]"
+          class="mt-4 w-full text-sm font-bold text-slate-500 hover:text-[#ff5a5f]"
           @click="authMode = authMode === 'login' ? 'register' : 'login'; authError = ''"
         >
           {{ authMode === "login" ? "没有账号？立即注册" : "已有账号？去登录" }}
         </button>
+      </section>
+    </div>
+
+    <div v-if="profileModalOpen" class="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 px-4 backdrop-blur-sm">
+      <section class="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl custom-scroll">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <p class="inline-flex items-center gap-1.5 text-sm font-bold text-[#ff5a5f]">
+              <Settings class="h-4 w-4" />
+              个人中心
+            </p>
+            <h2 class="mt-2 text-2xl font-black text-slate-900">账号资料与支付流水</h2>
+          </div>
+          <button type="button" class="grid h-9 w-9 place-items-center rounded-full border border-[#f2ded3] text-slate-500 hover:bg-[#fff1ed]" @click="profileModalOpen = false" aria-label="关闭">
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+
+        <div class="mt-6 grid gap-5 lg:grid-cols-[280px_1fr]">
+          <aside class="rounded-2xl border border-[#f2ded3] bg-[#fff8f3] p-5">
+            <div class="flex items-center gap-4">
+              <span class="grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-full bg-white text-[#ff5a5f] shadow-sm">
+                <img v-if="profileAvatarSrc" :src="profileAvatarSrc" alt="用户头像预览" class="h-full w-full object-cover" />
+                <User v-else class="h-7 w-7" />
+              </span>
+              <div class="min-w-0">
+                <p class="truncate text-lg font-black text-slate-900">{{ profileDisplayName }}</p>
+                <p class="truncate text-xs font-semibold text-slate-500">{{ authUser?.email }}</p>
+              </div>
+            </div>
+            <div class="mt-5 rounded-2xl border px-4 py-3 text-sm font-black" :class="authUser?.is_vip ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'">
+              <span class="inline-flex items-center gap-2">
+                <Sparkles class="h-4 w-4" />
+                {{ authUser?.is_vip ? "VIP 已开通" : "免费用户" }}
+              </span>
+              <p v-if="authUser?.vip_activated_at" class="mt-2 text-xs font-semibold opacity-80">
+                开通时间：{{ formatPaymentTime(authUser.vip_activated_at) }}
+              </p>
+            </div>
+          </aside>
+
+          <div class="space-y-5">
+            <section class="rounded-2xl border border-[#f2ded3] bg-white p-5">
+              <h3 class="text-base font-black text-slate-900">编辑主页资料</h3>
+              <div class="mt-4 grid gap-4">
+                <label class="block text-sm font-bold text-slate-700">
+                  昵称
+                  <input
+                    v-model="profileName"
+                    type="text"
+                    maxlength="32"
+                    class="mt-2 w-full rounded-2xl border border-[#f2ded3] bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-[#ff9f80] focus:ring-4 focus:ring-[#ff5a5f]/10"
+                    placeholder="给自己起个名字"
+                  />
+                </label>
+                <label class="block text-sm font-bold text-slate-700">
+                  头像
+                  <span class="mt-2 flex flex-col gap-3 rounded-2xl border border-dashed border-[#ffc9bd] bg-[#fff8f3] p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <span class="text-xs font-semibold leading-5 text-slate-500">上传 JPG、PNG 或 WEBP，最大 2MB。</span>
+                    <span class="inline-flex w-fit cursor-pointer items-center justify-center gap-2 rounded-full bg-white px-4 py-2 text-xs font-black text-[#ff5a5f] shadow-sm hover:bg-[#fff1ed]">
+                      <User class="h-4 w-4" />
+                      选择图片
+                      <input type="file" accept="image/png,image/jpeg,image/webp" class="sr-only" @change="onAvatarFileChange" />
+                    </span>
+                  </span>
+                </label>
+              </div>
+              <p v-if="profileError" class="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{{ profileError }}</p>
+              <div class="mt-5 flex flex-col gap-3 sm:flex-row sm:justify-end">
+                <button type="button" class="rounded-full border border-[#f2ded3] px-5 py-3 text-sm font-bold text-slate-600 hover:bg-[#fff1ed]" @click="profileModalOpen = false">关闭</button>
+                <button type="button" class="inline-flex items-center justify-center gap-2 rounded-full bg-[#ff5a5f] px-5 py-3 text-sm font-black text-white hover:bg-[#ef4444] disabled:cursor-not-allowed disabled:bg-slate-200" :disabled="profileSaving" @click="saveProfile">
+                  <Settings class="h-4 w-4" />
+                  {{ profileSaving ? "保存中..." : "保存资料" }}
+                </button>
+              </div>
+            </section>
+
+            <section class="rounded-2xl border border-[#f2ded3] bg-white p-5">
+              <div class="flex items-center justify-between gap-3">
+                <h3 class="inline-flex items-center gap-2 text-base font-black text-slate-900">
+                  <CreditCard class="h-4 w-4 text-[#ff5a5f]" />
+                  支付流水
+                </h3>
+                <button type="button" class="rounded-full px-3 py-1.5 text-xs font-black text-[#ff5a5f] hover:bg-[#fff1ed]" @click="loadPaymentHistory">
+                  刷新
+                </button>
+              </div>
+              <div v-if="paymentsLoading" class="mt-4 rounded-2xl bg-[#fff8f3] px-4 py-6 text-center text-sm font-bold text-slate-500">
+                正在加载支付流水...
+              </div>
+              <div v-else-if="!paymentHistory.length" class="mt-4 rounded-2xl bg-[#fff8f3] px-4 py-6 text-center text-sm font-bold text-slate-500">
+                暂无支付流水
+              </div>
+              <div v-else class="mt-4 space-y-3">
+                <article v-for="payment in paymentHistory" :key="payment.id" class="rounded-2xl border border-[#f2ded3] bg-[#fff8f3] p-4">
+                  <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div class="min-w-0">
+                      <p class="text-base font-black text-slate-900">{{ formatPaymentAmount(payment) }}</p>
+                      <p class="mt-1 truncate text-xs font-semibold text-slate-500">流水号：{{ shortPaymentId(payment) }}</p>
+                    </div>
+                    <span class="w-fit rounded-full border px-3 py-1 text-xs font-black" :class="paymentStatusClass(payment.status)">
+                      {{ paymentStatusLabel(payment.status) }}
+                    </span>
+                  </div>
+                  <div class="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-slate-500">
+                    <span>创建：{{ formatPaymentTime(payment.created_at) }}</span>
+                    <span>更新：{{ formatPaymentTime(payment.updated_at) }}</span>
+                  </div>
+                </article>
+              </div>
+            </section>
+          </div>
+        </div>
       </section>
     </div>
 
