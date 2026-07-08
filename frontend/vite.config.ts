@@ -25,30 +25,34 @@ export default defineConfig(({ mode }) => {
         closeBundle() {
           const distDir = resolve(process.cwd(), "dist");
           mkdirSync(distDir, { recursive: true });
-          writeFileSync(
-            resolve(distDir, "robots.txt"),
-            `User-agent: *\nAllow: /\n\nSitemap: ${siteUrl}/sitemap.xml\n`,
-            "utf8",
-          );
-          writeFileSync(
-            resolve(distDir, "sitemap.xml"),
-            `<?xml version="1.0" encoding="UTF-8"?>\n` +
-              `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-              `  <url>\n` +
-              `    <loc>${siteUrl}/</loc>\n` +
-              `    <lastmod>2026-07-08</lastmod>\n` +
-              `    <changefreq>weekly</changefreq>\n` +
-              `    <priority>1.0</priority>\n` +
-              `  </url>\n` +
-              `  <url>\n` +
-              `    <loc>${siteUrl}/llms.txt</loc>\n` +
-              `    <lastmod>2026-07-08</lastmod>\n` +
-              `    <changefreq>monthly</changefreq>\n` +
-              `    <priority>0.6</priority>\n` +
-              `  </url>\n` +
-              `</urlset>\n`,
-            "utf8",
-          );
+          try {
+            writeFileSync(
+              resolve(distDir, "robots.txt"),
+              `User-agent: *\nAllow: /\n\nSitemap: ${siteUrl}/sitemap.xml\n`,
+              "utf8",
+            );
+            writeFileSync(
+              resolve(distDir, "sitemap.xml"),
+              `<?xml version="1.0" encoding="UTF-8"?>\n` +
+                `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+                `  <url>\n` +
+                `    <loc>${siteUrl}/</loc>\n` +
+                `    <lastmod>2026-07-08</lastmod>\n` +
+                `    <changefreq>weekly</changefreq>\n` +
+                `    <priority>1.0</priority>\n` +
+                `  </url>\n` +
+                `  <url>\n` +
+                `    <loc>${siteUrl}/llms.txt</loc>\n` +
+                `    <lastmod>2026-07-08</lastmod>\n` +
+                `    <changefreq>monthly</changefreq>\n` +
+                `    <priority>0.6</priority>\n` +
+                `  </url>\n` +
+                `</urlset>\n`,
+              "utf8",
+            );
+          } catch (error) {
+            console.warn("SEO asset generation skipped:", error);
+          }
         },
       },
       vue(),
