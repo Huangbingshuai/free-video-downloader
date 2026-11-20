@@ -5,6 +5,8 @@ import subprocess
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import ProxyHandler, build_opener
 
 from dotenv import load_dotenv
 
@@ -75,6 +77,20 @@ def _stop_pot_server() -> None:
         print("[POT] Stopped bgutil POT server")
 
 
+def _pot_server_is_running() -> bool:
+    if _pot_process and _pot_process.poll() is None:
+        return True
+
+    provider_url = os.getenv("POT_PROVIDER_URL", "http://127.0.0.1:4416").strip().rstrip("/")
+    if not provider_url:
+        provider_url = "http://127.0.0.1:4416"
+    try:
+        with build_opener(ProxyHandler({})).open(f"{provider_url}/ping", timeout=0.5) as response:
+            return response.status == 200
+    except (OSError, TimeoutError, URLError):
+        return False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -109,5 +125,5 @@ app.include_router(summaries_router)
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    pot_status = "running" if (_pot_process and _pot_process.poll() is None) else "stopped"
+    pot_status = "running" if _pot_server_is_running() else "stopped"
     return {"status": "ok", "pot_server": pot_status}

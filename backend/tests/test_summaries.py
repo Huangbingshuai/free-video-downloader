@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import time
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,6 +11,7 @@ from app.main import app
 from app.routes import summaries
 from app.schemas import AskSummaryResponse, MindMapNode, SummaryResult, TranscriptSegment, VideoInfo
 from app.services.auth_service import activate_vip
+from app.services.database import get_connection
 from app.services.summary_store import summary_store
 from app.services.transcript_service import parse_json3, parse_vtt
 
@@ -22,6 +25,23 @@ def isolated_db(monkeypatch, tmp_path):
 
 def _setup_api_key():
     os.environ.setdefault("DEEPSEEK_API_KEY", "sk-test-key")
+
+
+def _register(client: TestClient, email: str):
+    code = "123456"
+    now = f"2026-07-09T00:00:00.{time.time_ns()}+00:00"
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO email_codes (id, email, code, purpose, expires_at, created_at)
+            VALUES (?, ?, ?, 'register', '2099-01-01T00:00:00+00:00', ?)
+            """,
+            (f"test-{uuid4().hex}", email, code, now),
+        )
+    return client.post(
+        "/api/auth/register",
+        json={"email": email, "password": "password123", "code": code},
+    )
 
 
 def test_parse_vtt_segments():
@@ -88,10 +108,7 @@ def test_summary_job_success(monkeypatch):
 def test_ask_summary_endpoint(monkeypatch):
     _setup_api_key()
     with TestClient(app) as client:
-        auth = client.post(
-            "/api/auth/register",
-            json={"email": "ask-summary@example.com", "password": "password123"},
-        )
+        auth = _register(client, "ask-summary@example.com")
         user_id = auth.json()["user"]["id"]
         activate_vip(user_id)
         transcript = [TranscriptSegment(start=0, end=2, text="这是字幕")]
@@ -142,10 +159,7 @@ def test_create_summary_endpoint(monkeypatch):
     )
 
     with TestClient(app) as client:
-        auth = client.post(
-            "/api/auth/register",
-            json={"email": "create-summary@example.com", "password": "password123"},
-        )
+        auth = _register(client, "create-summary@example.com")
         activate_vip(auth.json()["user"]["id"])
         response = client.post("/api/summaries", json={
             "url": "https://example.com/video",
@@ -158,7 +172,8 @@ def test_create_summary_endpoint(monkeypatch):
     assert payload["status"] in ("queued", "running")
 
 
-def test_create_summary_requires_vip():
+def test_create_summary_allows_daily_free_quota_then_requires_vip(monkeypatch):
+    monkeypatch.setattr(summaries, "_run_summary_job_stream", lambda *args: None)
     with TestClient(app) as client:
         response = client.post("/api/summaries", json={
             "url": "https://example.com/video",
@@ -166,14 +181,11 @@ def test_create_summary_requires_vip():
         })
         assert response.status_code == 401
 
-        client.post(
-            "/api/auth/register",
-            json={"email": "free-summary@example.com", "password": "password123"},
-        )
-        response = client.post("/api/summaries", json={
-            "url": "https://example.com/video",
-            "language": "zh",
-        })
+        _register(client, "free-summary@example.com")
+        payload = {"url": "https://example.com/video", "language": "zh"}
+        assert client.post("/api/summaries", json=payload).status_code == 200
+        assert client.post("/api/summaries", json=payload).status_code == 200
+        response = client.post("/api/summaries", json=payload)
         assert response.status_code == 403
 
 

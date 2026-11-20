@@ -7,6 +7,7 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const siteUrl = (env.VITE_SITE_URL || "http://localhost:5173").replace(/\/$/, "");
+  const apiProxyTarget = env.VITE_API_PROXY_TARGET || "http://127.0.0.1:8000";
   const outDir = env.VITE_OUT_DIR || "dist";
 
   return {
@@ -63,11 +64,11 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         "/api": {
-          target: "http://127.0.0.1:8000",
+          target: apiProxyTarget,
           changeOrigin: true,
         },
         "/uploads": {
-          target: "http://127.0.0.1:8000",
+          target: apiProxyTarget,
           changeOrigin: true,
         },
       },
