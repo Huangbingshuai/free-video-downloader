@@ -1,6 +1,6 @@
 # 影知
 
-基于 FastAPI、yt-dlp、Vue3、Vite 和 Tailwind CSS 的公开视频下载与 AI 总结网站 MVP。当前已完成阶段 1 到阶段 3：后端核心 API、前端页面、解析到下载任务的联调闭环。
+基于 FastAPI、yt-dlp、Vue 3、Vite 和 Tailwind CSS 的公开视频解析、下载与 AI 学习分析应用，支持批量链接处理、下载任务和视频内容总结、转录、思维导图及问答。
 
 ## 功能范围
 
